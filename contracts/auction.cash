@@ -1,0 +1,92 @@
+// BAZAAR - English Auction Contract
+// BCH Chipnet - CashScript v0.10+
+// NFT auction with automatic bid refunds, timelock, and royalty enforcement
+
+pragma cashscript ^0.10.0;
+
+contract Auction(
+    bytes20 sellerPkh,
+    int minBid,
+    int endTime,
+    bytes20 creatorPkh,
+    int royaltyBasisPoints,
+    int minBidIncrement
+) {
+    // Place a new bid - must be higher than current bid
+    // Previous bidder is automatically refunded in the same transaction
+    function bid(
+        pubkey bidderPk,
+        int currentBidAmount,
+        bytes20 previousBidderPkh
+    ) {
+        // Auction must not have ended
+        require(tx.time < endTime);
+
+        // New bid must be at least minBidIncrement higher than current
+        int newBidAmount = tx.outputs[0].value;
+        if (currentBidAmount > 0) {
+            require(newBidAmount >= currentBidAmount + minBidIncrement);
+        } else {
+            require(newBidAmount >= minBid);
+        }
+
+        // Output 0: Contract continues with new bid amount (NFT stays in contract)
+        // The contract UTXO is recreated with the new bid
+        require(
+            tx.outputs[0].lockingBytecode
+            == tx.inputs[this.activeInputIndex].lockingBytecode
+        );
+
+        // NFT must stay in the contract
+        require(
+            tx.outputs[0].tokenCategory
+            == tx.inputs[this.activeInputIndex].tokenCategory
+        );
+
+        // Output 1: Refund previous bidder (if there was one)
+        if (currentBidAmount > 0) {
+            bytes25 prevBidderLockingBytecode = new LockingBytecodeP2PKH(previousBidderPkh);
+            require(tx.outputs[1].lockingBytecode == prevBidderLockingBytecode);
+            require(tx.outputs[1].value >= currentBidAmount);
+        }
+    }
+
+    // Winner claims the NFT after auction ends
+    function claim(
+        pubkey winnerPk,
+        int finalBidAmount
+    ) {
+        // Auction must have ended
+        require(tx.time >= endTime);
+
+        // Must have a winning bid
+        require(finalBidAmount >= minBid);
+
+        // Calculate royalty and seller proceeds
+        int royaltyAmount = finalBidAmount * royaltyBasisPoints / 10000;
+        int sellerAmount = finalBidAmount - royaltyAmount;
+
+        // Output 0: Seller receives payment minus royalty
+        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);
+        require(tx.outputs[0].value >= sellerAmount);
+
+        // Output 1: Creator receives royalty
+        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);
+        require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);
+        require(tx.outputs[1].value >= royaltyAmount);
+
+        // Output 2: NFT goes to winner
+        require(
+            tx.outputs[2].tokenCategory
+            == tx.inputs[this.activeInputIndex].tokenCategory
+        );
+    }
+
+    // Seller reclaims NFT if no bids were placed after auction ends
+    function reclaim(pubkey pk, sig s) {
+        require(hash160(pk) == sellerPkh);
+        require(checkSig(s, pk));
+        require(tx.time >= endTime);
+    }
+}

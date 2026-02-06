@@ -1,0 +1,147 @@
+// Pinata IPFS Client for NFT metadata storage
+
+const PINATA_JWT = process.env.NEXT_PUBLIC_PINATA_JWT || '';
+const PINATA_GATEWAY = process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud';
+const PINATA_API = 'https://api.pinata.cloud';
+
+export interface PinataUploadResult {
+  success: boolean;
+  ipfsHash?: string;
+  ipfsUri?: string;
+  httpUrl?: string;
+  error?: string;
+}
+
+// Upload a file (image/video) to IPFS via Pinata
+export async function uploadFileToPinata(file: File): Promise<PinataUploadResult> {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const metadata = JSON.stringify({
+      name: file.name,
+      keyvalues: {
+        app: 'bazaar-nft',
+        type: 'nft-asset',
+      },
+    });
+    formData.append('pinataMetadata', metadata);
+
+    const options = JSON.stringify({
+      cidVersion: 1,
+    });
+    formData.append('pinataOptions', options);
+
+    const response = await fetch(`${PINATA_API}/pinning/pinFileToIPFS`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${PINATA_JWT}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      return { success: false, error: `Pinata upload failed: ${error}` };
+    }
+
+    const data = await response.json();
+    const ipfsHash = data.IpfsHash;
+
+    return {
+      success: true,
+      ipfsHash,
+      ipfsUri: `ipfs://${ipfsHash}`,
+      httpUrl: `${PINATA_GATEWAY}/ipfs/${ipfsHash}`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
+// Upload NFT metadata JSON to IPFS via Pinata
+export async function uploadMetadataToPinata(metadata: {
+  name: string;
+  description: string;
+  image: string;
+  creator: string;
+  royalty: number;
+  attributes?: Array<{ trait_type: string; value: string }>;
+}): Promise<PinataUploadResult> {
+  try {
+    const response = await fetch(`${PINATA_API}/pinning/pinJSONToIPFS`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${PINATA_JWT}`,
+      },
+      body: JSON.stringify({
+        pinataContent: {
+          ...metadata,
+          createdAt: Date.now(),
+          platform: 'Bazaar NFT Marketplace',
+          chain: 'Bitcoin Cash Chipnet',
+        },
+        pinataMetadata: {
+          name: `${metadata.name}-metadata.json`,
+          keyvalues: {
+            app: 'bazaar-nft',
+            type: 'nft-metadata',
+          },
+        },
+        pinataOptions: {
+          cidVersion: 1,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      return { success: false, error: `Metadata upload failed: ${error}` };
+    }
+
+    const data = await response.json();
+    const ipfsHash = data.IpfsHash;
+
+    return {
+      success: true,
+      ipfsHash,
+      ipfsUri: `ipfs://${ipfsHash}`,
+      httpUrl: `${PINATA_GATEWAY}/ipfs/${ipfsHash}`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Metadata upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
+// Fetch metadata from IPFS
+export async function fetchMetadataFromIPFS(ipfsUri: string): Promise<Record<string, unknown> | null> {
+  try {
+    const cid = ipfsUri.replace('ipfs://', '');
+    const url = `${PINATA_GATEWAY}/ipfs/${cid}`;
+    const response = await fetch(url, { next: { revalidate: 3600 } });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+// Convert IPFS URI to HTTP gateway URL
+export function ipfsToGatewayUrl(ipfsUri: string): string {
+  if (!ipfsUri) return '';
+  if (ipfsUri.startsWith('http')) return ipfsUri;
+  const cid = ipfsUri.replace('ipfs://', '');
+  return `${PINATA_GATEWAY}/ipfs/${cid}`;
+}
+
+// Check if Pinata is configured
+export function isPinataConfigured(): boolean {
+  return PINATA_JWT !== '' && PINATA_JWT !== 'your_pinata_jwt_here';
+}
