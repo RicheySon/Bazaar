@@ -67,6 +67,10 @@ export default function CreatePage() {
 
   const handleSubmit = async () => {
     if (!wallet?.isConnected) { setModalOpen(true); return; }
+    if (wallet.balance <= 0n) {
+      setError('Insufficient balance. Fund your wallet with Chipnet BCH from the faucet: https://tbch.googol.cash');
+      return;
+    }
     if (!name.trim()) { setError('Name is required'); return; }
     if (!mediaFile) { setError(`${mediaType === 'video' ? 'Video' : 'Image'} is required`); return; }
     if (listingMode === 'fixed' && (!price || parseFloat(price) <= 0)) { setError('Valid price is required'); return; }
