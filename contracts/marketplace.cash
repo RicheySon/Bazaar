@@ -2,7 +2,7 @@
 // BCH Chipnet - CashScript v0.10+
 // Atomic swap: NFT for BCH with enforced creator royalties
 
-pragma cashscript ^0.10.0;
+pragma cashscript >=0.10.0;
 
 contract Marketplace(
     bytes20 sellerPkh,

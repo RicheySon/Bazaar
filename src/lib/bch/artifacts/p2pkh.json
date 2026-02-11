@@ -1,0 +1,46 @@
+{
+  "contractName": "P2PKH",
+  "constructorInputs": [
+    {
+      "name": "pkh",
+      "type": "bytes20"
+    }
+  ],
+  "abi": [
+    {
+      "name": "spend",
+      "inputs": [
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "s",
+          "type": "sig"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_OVER OP_HASH160 OP_EQUALVERIFY OP_CHECKSIG",
+  "source": "pragma cashscript >=0.10.0;\r\n\r\n// Standard P2PKH (Pay to Public Key Hash) contract\r\n// Used to wrap user's wallet for spending UTXOs and funding other contracts\r\ncontract P2PKH(bytes20 pkh) {\r\n    function spend(pubkey pk, sig s) {\r\n        require(hash160(pk) == pkh);\r\n        require(checkSig(s, pk));\r\n    }\r\n}\r\n",
+  "debug": {
+    "bytecode": "78a988ac",
+    "sourceMap": "7:24:7:26;:16::27:1;:8::36;8::8:33",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 3,
+        "line": 7
+      },
+      {
+        "ip": 5,
+        "line": 8
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-02-11T03:14:02.450Z"
+}

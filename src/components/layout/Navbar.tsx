@@ -117,31 +117,44 @@ export function Navbar() {
   const [balance, setBalance] = useState<bigint>(0n);
   const [searchFocused, setSearchFocused] = useState(false);
 
+  const refreshBalance = (address: string, tokenAddress: string, publicKey: string) => {
+    fetchWalletData(address).then((data) => {
+      if (data) {
+        const bal = BigInt(data.balance);
+        setBalance(bal);
+        setWallet({
+          address,
+          tokenAddress,
+          balance: bal,
+          publicKey,
+          isConnected: true,
+        });
+      }
+    }).catch(() => {});
+  };
+
+  // Load wallet from localStorage on mount
   useEffect(() => {
     const stored = loadWallet();
     if (stored) {
+      const pubHex = Array.from(stored.publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
       setWallet({
         address: stored.address,
         tokenAddress: stored.tokenAddress,
         balance: 0n,
-        publicKey: Array.from(stored.publicKey).map(b => b.toString(16).padStart(2, '0')).join(''),
+        publicKey: pubHex,
         isConnected: true,
       });
-      fetchWalletData(stored.address).then((data) => {
-        if (data) {
-          const bal = BigInt(data.balance);
-          setBalance(bal);
-          setWallet({
-            address: stored.address,
-            tokenAddress: stored.tokenAddress,
-            balance: bal,
-            publicKey: Array.from(stored.publicKey).map(b => b.toString(16).padStart(2, '0')).join(''),
-            isConnected: true,
-          });
-        }
-      }).catch(() => {});
+      refreshBalance(stored.address, stored.tokenAddress, pubHex);
     }
   }, [setWallet]);
+
+  // Refetch balance when wallet connects (modal closes with new wallet)
+  useEffect(() => {
+    if (wallet?.isConnected && wallet.balance === 0n) {
+      refreshBalance(wallet.address, wallet.tokenAddress, wallet.publicKey);
+    }
+  }, [wallet?.isConnected]);
 
   return (
     <>

@@ -8,27 +8,28 @@
     "start": "next start"
   },
   "dependencies": {
+    "@noble/hashes": "^1.7.1",
+    "@noble/secp256k1": "^2.2.3",
+    "@scure/bip32": "^1.6.2",
+    "@scure/bip39": "^1.5.4",
+    "cashscript": "^0.10.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.0.0",
+    "lucide-react": "^0.469.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "cashscript": "^0.10.0",
-    "framer-motion": "^12.0.0",
-    "zustand": "^5.0.0",
-    "lucide-react": "^0.469.0",
-    "clsx": "^2.1.1",
     "tailwind-merge": "^2.6.0",
-    "@scure/bip39": "^1.5.4",
-    "@scure/bip32": "^1.6.2",
-    "@noble/secp256k1": "^2.2.3",
-    "@noble/hashes": "^1.7.1"
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "tailwindcss": "^3.4.0",
+    "autoprefixer": "^10.4.0",
+    "cashc": "^0.12.1",
     "postcss": "^8.4.0",
-    "autoprefixer": "^10.4.0"
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.7.0"
   }
 }

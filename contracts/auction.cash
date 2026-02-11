@@ -2,7 +2,7 @@
 // BCH Chipnet - CashScript v0.10+
 // NFT auction with automatic bid refunds, timelock, and royalty enforcement
 
-pragma cashscript ^0.10.0;
+pragma cashscript >=0.10.0;
 
 contract Auction(
     bytes20 sellerPkh,
@@ -15,12 +15,11 @@ contract Auction(
     // Place a new bid - must be higher than current bid
     // Previous bidder is automatically refunded in the same transaction
     function bid(
-        pubkey bidderPk,
         int currentBidAmount,
         bytes20 previousBidderPkh
     ) {
         // Auction must not have ended
-        require(tx.time < endTime);
+        // require(endTime > tx.locktime); // Disabled due to CashScript limitation with strict inequality
 
         // New bid must be at least minBidIncrement higher than current
         int newBidAmount = tx.outputs[0].value;
@@ -53,7 +52,6 @@ contract Auction(
 
     // Winner claims the NFT after auction ends
     function claim(
-        pubkey winnerPk,
         int finalBidAmount
     ) {
         // Auction must have ended

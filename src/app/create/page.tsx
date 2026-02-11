@@ -8,7 +8,8 @@ import {
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
 import { prepareMint } from '@/lib/bch/api-client';
-import { loadWallet } from '@/lib/bch/wallet';
+import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
+import { mintNFT } from '@/lib/bch/contracts';
 import { getExplorerTxUrl } from '@/lib/bch/config';
 
 type ListingMode = 'fixed' | 'auction';
@@ -104,10 +105,23 @@ export default function CreatePage() {
         const walletData = loadWallet();
         if (!walletData) { setError('Wallet not found. Please reconnect.'); setStep(0); return; }
 
-        const mintResult = await prepareMint(walletData.address, metadataResult.ipfsHash, name.trim());
+        // Integrate real minting
+        const walletPkh = getPkhHex(walletData);
+        const mintResult = await mintNFT(
+          walletData.privateKey,
+          walletPkh,
+          walletData.address,
+          metadataResult.ipfsHash,
+          {
+            name: name.trim(),
+            description: description.trim(),
+            image: imageResult.ipfsUri
+          }
+        );
+
         if (!mintResult.success) { setError(mintResult.error || 'Minting failed'); setStep(0); return; }
 
-        setTxid(mintResult.tokenCategory || mintResult.utxo?.txid || '');
+        setTxid(mintResult.txid || '');
         setStep(4);
       } else {
         await new Promise((r) => setTimeout(r, 2000));
@@ -148,9 +162,8 @@ export default function CreatePage() {
                 </p>
                 <div className="flex justify-center gap-2">
                   {steps.map((s, i) => (
-                    <div key={i} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs ${
-                      i + 1 < step ? 'badge-green' : i + 1 === step ? 'badge-blue animate-pulse' : ''
-                    }`} style={i + 1 > step ? { color: 'var(--text-muted)' } : {}}>
+                    <div key={i} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs ${i + 1 < step ? 'badge-green' : i + 1 === step ? 'badge-blue animate-pulse' : ''
+                      }`} style={i + 1 > step ? { color: 'var(--text-muted)' } : {}}>
                       {i + 1 < step ? <Check className="h-3 w-3" /> : <s.icon className="h-3 w-3" />}
                       {s.label}
                     </div>
@@ -223,18 +236,16 @@ export default function CreatePage() {
             <div className="flex gap-2 mb-3">
               <button
                 onClick={() => { setMediaType('image'); removeMedia(); }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  mediaType === 'image' ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
-                }`}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${mediaType === 'image' ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
+                  }`}
                 style={mediaType === 'image' ? { background: 'var(--bg-hover)', border: '1px solid var(--border-light)' } : { border: '1px solid var(--border)' }}
               >
                 <ImageIcon className="h-3.5 w-3.5" /> Image
               </button>
               <button
                 onClick={() => { setMediaType('video'); removeMedia(); }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  mediaType === 'video' ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
-                }`}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${mediaType === 'video' ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
+                  }`}
                 style={mediaType === 'video' ? { background: 'var(--bg-hover)', border: '1px solid var(--border-light)' } : { border: '1px solid var(--border)' }}
               >
                 <Video className="h-3.5 w-3.5" /> Video

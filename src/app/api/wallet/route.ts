@@ -18,7 +18,14 @@ export async function GET(request: NextRequest) {
 
   try {
     const electrum = getProvider();
-    const utxos = await electrum.getUtxos(address);
+
+    // Race against a timeout for serverless environments
+    const utxos = await Promise.race([
+      electrum.getUtxos(address),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Electrum connection timed out')), 15000)
+      ),
+    ]);
 
     const balance = utxos.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
 

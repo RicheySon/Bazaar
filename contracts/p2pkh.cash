@@ -1,0 +1,10 @@
+pragma cashscript >=0.10.0;
+
+// Standard P2PKH (Pay to Public Key Hash) contract
+// Used to wrap user's wallet for spending UTXOs and funding other contracts
+contract P2PKH(bytes20 pkh) {
+    function spend(pubkey pk, sig s) {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}
