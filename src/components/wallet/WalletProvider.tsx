@@ -4,8 +4,10 @@ import { Web3ModalConnectorContextProvider } from '@bch-wc2/web3modal-connector'
 import { useEffect, useRef, useState } from 'react';
 
 // Clear WalletConnect cached session data to prevent auto-popup
-function clearWalletConnectCache() {
+async function clearWalletConnectCache() {
     if (typeof window === 'undefined') return;
+
+    console.log('[WalletProvider] Clearing WalletConnect cache...');
 
     // Clear all WalletConnect related localStorage keys
     const keysToRemove: string[] = [];
@@ -22,6 +24,21 @@ function clearWalletConnectCache() {
         }
     }
     keysToRemove.forEach(key => localStorage.removeItem(key));
+
+    // Clear IndexedDB for WalletConnect
+    try {
+        if (window.indexedDB && window.indexedDB.databases) {
+            const dbs = await window.indexedDB.databases();
+            for (const db of dbs) {
+                if (db.name && (db.name.includes('walletconnect') || db.name.includes('wc@'))) {
+                    console.log(`[WalletProvider] Deleting IndexedDB: ${db.name}`);
+                    window.indexedDB.deleteDatabase(db.name);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('[WalletProvider] Failed to clear IndexedDB:', e);
+    }
 }
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {

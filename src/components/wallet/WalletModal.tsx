@@ -186,6 +186,30 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Use your existing BCH wallet</div>
                     </div>
                   </button>
+
+                  <div className="text-center mt-3">
+                    <button
+                      onClick={async () => {
+                        if (confirm('This will reset your connection settings and reload the page. Continue?')) {
+                          localStorage.clear();
+                          if (window.indexedDB && window.indexedDB.databases) {
+                            try {
+                              const dbs = await window.indexedDB.databases();
+                              for (const db of dbs) {
+                                if (db.name && (db.name.includes('walletconnect') || db.name.includes('wc@'))) {
+                                  window.indexedDB.deleteDatabase(db.name);
+                                }
+                              }
+                            } catch (e) { console.error(e); }
+                          }
+                          window.location.reload();
+                        }
+                      }}
+                      className="text-[10px] text-[var(--text-muted)] underline hover:text-[var(--accent-red)] transition-colors"
+                    >
+                      Trouble connecting? Reset Connection
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-5 p-3 rounded-lg" style={{ background: 'rgba(0,229,69,0.05)', border: '1px solid rgba(0,229,69,0.1)' }}>
