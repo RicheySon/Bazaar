@@ -39,14 +39,19 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
 
   const handleWalletConnect = async () => {
     try {
+      console.log('--- STARTING WALLETCONNECT ---');
+      console.log('Connect function available:', !!connect);
+
       setError('');
       // This opens the WalletConnect QR modal
+      console.log('Calling await connect()...');
       await connect();
+      console.log('connect() returned successfully');
 
       // Don't close our modal here - let useWalletSync handle wallet state
       // The modal will close when wallet is connected via the useEffect below
     } catch (err) {
-      console.error('[WalletModal] WalletConnect error:', err);
+      console.error('WalletConnect error detected:', err);
       setError(err instanceof Error ? err.message : 'Failed to connect wallet');
     }
   };
@@ -115,7 +120,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+        <div className="fixed inset-0 z-[50] flex items-center justify-center">
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

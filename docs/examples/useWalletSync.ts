@@ -29,6 +29,7 @@ export function useWalletSync() {
                     address,
                     tokenAddress: address, // BCH uses same address
                     balance: wallet?.balance || 0n,
+                    publicKey: '',
                     isConnected: true,
                 });
             }
