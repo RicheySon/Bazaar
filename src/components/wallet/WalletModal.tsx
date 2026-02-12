@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, KeyRound, Copy, Check, Eye, EyeOff, ExternalLink, AlertTriangle } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
@@ -40,12 +40,13 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const handleWalletConnect = async () => {
     try {
       setError('');
+      // This opens the WalletConnect QR modal
       await connect();
 
-      // Connection happens via context, just close modal
-      // The address will be available via useWeb3ModalConnectorContext
-      resetAndClose();
+      // Don't close our modal here - let useWalletSync handle wallet state
+      // The modal will close when wallet is connected via the useEffect below
     } catch (err) {
+      console.error('[WalletModal] WalletConnect error:', err);
       setError(err instanceof Error ? err.message : 'Failed to connect wallet');
     }
   };
@@ -90,6 +91,14 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // Auto-close modal when WalletConnect connection succeeds
+  useEffect(() => {
+    if (isConnected && address) {
+      // Successfully connected via WalletConnect
+      resetAndClose();
+    }
+  }, [isConnected, address]);
 
   const resetAndClose = () => {
     setMode('choose');
