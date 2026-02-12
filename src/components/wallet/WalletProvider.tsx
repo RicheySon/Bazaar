@@ -72,8 +72,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
                     icons: ['https://bazaar.example.com/icon.png']
                 },
                 // Explicitly set network to Chipnet (bchtest)
-                // The connector uses 'bchtest' for Chipnet/Testnet
-                network: 'bchtest'
+                useChipnet: true
             }}
         >
             {children}
