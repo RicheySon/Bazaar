@@ -4,11 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-import {
-    Wallet, Menu, X, ChevronDown, Search, TrendingUp, LayoutGrid,
-    Activity, Rocket, Layers, PlusCircle, Code2, BookOpen, Terminal, Key, User,
-    LogOut
-  } from 'lucide-react';
+  Wallet, Menu, X, ChevronDown, Search, TrendingUp, LayoutGrid,
+  Activity, Rocket, Layers, PlusCircle, Code2, BookOpen, Terminal, Key, User,
+  LogOut
+} from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { WalletModal } from '@/components/wallet/WalletModal';
 import { shortenAddress, formatBCH } from '@/lib/utils';
