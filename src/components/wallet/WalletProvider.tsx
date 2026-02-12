@@ -70,7 +70,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
                     description: 'BCH CashTokens NFT Marketplace',
                     url: typeof window !== 'undefined' ? window.location.origin : 'https://bazaar.example.com',
                     icons: ['https://bazaar.example.com/icon.png']
-                }
+                },
+                // Explicitly set network to Chipnet (bchtest)
+                // The connector uses 'bchtest' for Chipnet/Testnet
+                network: 'bchtest'
             }}
         >
             {children}
