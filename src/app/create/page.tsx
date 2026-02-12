@@ -16,7 +16,7 @@ type ListingMode = 'fixed' | 'auction';
 type MediaType = 'image' | 'video';
 
 export default function CreatePage() {
-  const { wallet, setModalOpen, connectionType, wcSession, wcClient } = useWalletStore();
+  const { wallet, setModalOpen, connectionType } = useWalletStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState('');
@@ -121,9 +121,7 @@ export default function CreatePage() {
               description: description.trim(),
               image: imageResult.ipfsUri
             },
-            'walletconnect',
-            wcSession,
-            wcClient
+            'walletconnect'
           );
         } else {
           // Generated Wallet Minting

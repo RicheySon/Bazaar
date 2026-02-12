@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, KeyRound, Copy, Check, Eye, EyeOff, ExternalLink, AlertTriangle } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { generateWallet, restoreWallet, saveWallet, validateMnemonic, type WalletData } from '@/lib/bch/wallet';
-import { connectWallet as connectWC } from '@/lib/bch/walletconnect';
+import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 import { CHIPNET_CONFIG } from '@/lib/bch/config';
 
 interface WalletModalProps {
@@ -14,7 +14,8 @@ interface WalletModalProps {
 }
 
 export function WalletModal({ isOpen, onClose }: WalletModalProps) {
-  const { setWallet, setConnectionType, setWCSession, setWCClient } = useWalletStore();
+  const { setWallet, setConnectionType } = useWalletStore();
+  const { connect, address, isConnected } = useWeb3ModalConnectorContext();
   const [mode, setMode] = useState<'choose' | 'create' | 'restore'>('choose');
   const [mnemonic, setMnemonic] = useState('');
   const [newWalletData, setNewWalletData] = useState<WalletData | null>(null);
@@ -39,23 +40,10 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const handleWalletConnect = async () => {
     try {
       setError('');
-      const wcState = await connectWC();
+      await connect();
 
-      if (!wcState.address) {
-        throw new Error('No address received from wallet');
-      }
-
-      setWallet({
-        address: wcState.address,
-        tokenAddress: wcState.address, // BCH wallets use same address
-        balance: 0n,
-        publicKey: wcState.publicKey || '',
-        isConnected: true,
-      });
-      setConnectionType('walletconnect');
-      setWCSession(wcState.session);
-      setWCClient(wcState.client);
-
+      // Connection happens via context, just close modal
+      // The address will be available via useWeb3ModalConnectorContext
       resetAndClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect wallet');

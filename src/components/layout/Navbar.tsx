@@ -13,7 +13,8 @@ import { WalletModal } from '@/components/wallet/WalletModal';
 import { shortenAddress, formatBCH } from '@/lib/utils';
 import { loadWallet } from '@/lib/bch/wallet';
 import { fetchWalletData } from '@/lib/bch/api-client';
-import { disconnectWallet } from '@/lib/bch/walletconnect';
+import { useWalletSync } from '@/hooks/useWalletSync';
+import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 
 interface DropdownItem {
   href: string;
@@ -113,17 +114,56 @@ function NavDropdown({ section }: { section: NavSection }) {
 }
 
 export function Navbar() {
+  useWalletSync(); // Sync WalletConnect context to store
   const { wallet, setWallet, isModalOpen, setModalOpen, disconnect, connectionType } = useWalletStore();
+  const { disconnect: wcDisconnect } = useWeb3ModalConnectorContext();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [balance, setBalance] = useState<bigint>(0n);
   const [searchFocused, setSearchFocused] = useState(false);
 
-  // ... (refreshBalance and useEffects remain unchanged)
+  const refreshBalance = (address: string, tokenAddress: string, publicKey: string) => {
+    fetchWalletData(address).then((data) => {
+      if (data) {
+        const bal = BigInt(data.balance);
+        setBalance(bal);
+        setWallet({
+          address,
+          tokenAddress,
+          balance: bal,
+          publicKey,
+          isConnected: true,
+        });
+      }
+    }).catch(() => { });
+  };
+
+  // Load wallet from localStorage on mount
+  useEffect(() => {
+    const stored = loadWallet();
+    if (stored) {
+      const pubHex = Array.from(stored.publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
+      setWallet({
+        address: stored.address,
+        tokenAddress: stored.tokenAddress,
+        balance: 0n,
+        publicKey: pubHex,
+        isConnected: true,
+      });
+      refreshBalance(stored.address, stored.tokenAddress, pubHex);
+    }
+  }, [setWallet]);
+
+  // Refetch balance when wallet connects (modal closes with new wallet)
+  useEffect(() => {
+    if (wallet?.isConnected && wallet.balance === 0n) {
+      refreshBalance(wallet.address, wallet.tokenAddress, wallet.publicKey);
+    }
+  }, [wallet?.isConnected]);
 
   const handleDisconnect = async () => {
     if (connectionType === 'walletconnect') {
       try {
-        await disconnectWallet();
+        await wcDisconnect();
       } catch (e) {
         console.error('Failed to disconnect WalletConnect session', e);
       }
