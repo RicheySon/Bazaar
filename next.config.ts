@@ -38,14 +38,26 @@ const nextConfig: NextConfig = {
       layers: true, // Enable layers for better WebAssembly support
     };
 
-    // Add externals to ignore specific modules
-    if (!config.externals) {
-      config.externals = [];
-    } else if (!Array.isArray(config.externals)) {
-      // If externals is not an array, convert it to an array
-      config.externals = [config.externals];
+    // Handle specific modules differently for Server vs Client
+    if (isServer) {
+      // On Server, mark these as external so they are not bundled (fixes native module issues)
+      if (!config.externals) {
+        config.externals = [];
+      } else if (!Array.isArray(config.externals)) {
+        config.externals = [config.externals];
+      }
+      config.externals.push('pino-pretty', 'lokijs', 'encoding', 'bufferutil', 'utf-8-validate');
+    } else {
+      // On Client, alias them to mocks or throwers
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        'bufferutil': path.join(__dirname, 'src/utils/throw-error.js'),
+        'utf-8-validate': path.join(__dirname, 'src/utils/throw-error.js'),
+        'pino-pretty': false,
+        'lokijs': false,
+        'encoding': false,
+      };
     }
-    config.externals.push('pino-pretty', 'lokijs', 'encoding', 'bufferutil', 'utf-8-validate');
 
     return config;
   },
