@@ -85,6 +85,7 @@ export interface TransactionResult {
   success: boolean;
   txid?: string;
   error?: string;
+  tokenCategory?: string; // For mintNFT: the newly created token category
 }
 
 export interface ChipnetConfig {

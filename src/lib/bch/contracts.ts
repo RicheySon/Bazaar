@@ -460,12 +460,31 @@ export async function claimAuction(
 // Mint a new CashTokens NFT
 export async function mintNFT(
   privateKey: Uint8Array,
-  pkh: string, // Added argument
-  address: string,
+  pkh: string,
+  address: string, // Added argument
   commitment: string, // IPFS CID or text
-  metadata: { name: string; description: string; image: string }
+  metadata: { name: string; description: string; image: string },
+  walletType: 'generated' | 'walletconnect' = 'generated',
+  wcSession?: any,
+  wcClient?: any
 ): Promise<TransactionResult> {
   try {
+    if (walletType === 'walletconnect') {
+      // WalletConnect Implementation
+      // TODO: Implement robust transaction construction for external signing.
+      // Currently, CashScript relies on internal construction.
+      // We would need to:
+      // 1. Build the transaction using a library like Libauth or bitcoincashjs
+      // 2. Request signature via wcClient.request({ method: 'bch_signTransaction', ... })
+      // 3. Broadcast signed tx
+
+      console.log('WalletConnect Mint initiated', wcSession);
+      return {
+        success: false,
+        error: 'WalletConnect minting is currently implementing external signing. Please use "Create New Wallet" for now.',
+      };
+    }
+
     // CashTokens genesis: spend a regular UTXO, create output with token data
     // Token category = txid of input being spent (specifically the 0th input)
 

@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, KeyRound, Copy, Check, Eye, EyeOff, ExternalLink, AlertTriangle } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { generateWallet, restoreWallet, saveWallet, validateMnemonic, type WalletData } from '@/lib/bch/wallet';
+import { connectWallet as connectWC } from '@/lib/bch/walletconnect';
 import { CHIPNET_CONFIG } from '@/lib/bch/config';
 
 interface WalletModalProps {
@@ -13,7 +14,7 @@ interface WalletModalProps {
 }
 
 export function WalletModal({ isOpen, onClose }: WalletModalProps) {
-  const { setWallet } = useWalletStore();
+  const { setWallet, setConnectionType, setWCSession, setWCClient } = useWalletStore();
   const [mode, setMode] = useState<'choose' | 'create' | 'restore'>('choose');
   const [mnemonic, setMnemonic] = useState('');
   const [newWalletData, setNewWalletData] = useState<WalletData | null>(null);
@@ -32,6 +33,32 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
       setError('');
     } catch (err) {
       setError('Failed to generate wallet');
+    }
+  };
+
+  const handleWalletConnect = async () => {
+    try {
+      setError('');
+      const wcState = await connectWC();
+
+      if (!wcState.address) {
+        throw new Error('No address received from wallet');
+      }
+
+      setWallet({
+        address: wcState.address,
+        tokenAddress: wcState.address, // BCH wallets use same address
+        balance: 0n,
+        publicKey: wcState.publicKey || '',
+        isConnected: true,
+      });
+      setConnectionType('walletconnect');
+      setWCSession(wcState.session);
+      setWCClient(wcState.client);
+
+      resetAndClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to connect wallet');
     }
   };
 
@@ -141,6 +168,20 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     <div className="text-left">
                       <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Restore Wallet</div>
                       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Import with 12-word seed phrase</div>
+                    </div>
+                  </button>
+
+                  <button onClick={handleWalletConnect}
+                    className="w-full flex items-center gap-3 p-4 rounded-lg border transition-all hover:border-[var(--accent-blue)]"
+                    style={{ borderColor: 'var(--border)', background: 'transparent' }}>
+                    <div className="p-2.5 rounded-lg" style={{ background: 'rgba(59,130,246,0.1)' }}>
+                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" style={{ color: 'var(--accent-blue)' }}>
+                        <path d="M5.463 4A3.463 3.463 0 0 0 2 7.463V16.537A3.463 3.463 0 0 0 5.463 20h13.074A3.463 3.463 0 0 0 22 16.537V7.463A3.463 3.463 0 0 0 18.537 4H5.463zM12 7.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9z" />
+                      </svg>
+                    </div>
+                    <div className="text-left">
+                      <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Connect Selene Wallet</div>
+                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Use your existing BCH wallet</div>
                     </div>
                   </button>
                 </div>

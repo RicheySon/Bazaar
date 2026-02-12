@@ -16,7 +16,7 @@ type ListingMode = 'fixed' | 'auction';
 type MediaType = 'image' | 'video';
 
 export default function CreatePage() {
-  const { wallet, setModalOpen } = useWalletStore();
+  const { wallet, setModalOpen, connectionType, wcSession, wcClient } = useWalletStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState('');
@@ -68,10 +68,14 @@ export default function CreatePage() {
 
   const handleSubmit = async () => {
     if (!wallet?.isConnected) { setModalOpen(true); return; }
-    if (wallet.balance <= 0n) {
+
+    // For WalletConnect, we might not have a balance check if Electrum is down.
+    // Allow proceeding if balance is 0 but we have a wallet connected via WC.
+    if (connectionType !== 'walletconnect' && wallet.balance <= 0n) {
       setError('Insufficient balance. Fund your wallet with Chipnet BCH from the faucet: https://tbch.googol.cash');
       return;
     }
+
     if (!name.trim()) { setError('Name is required'); return; }
     if (!mediaFile) { setError(`${mediaType === 'video' ? 'Video' : 'Image'} is required`); return; }
     if (listingMode === 'fixed' && (!price || parseFloat(price) <= 0)) { setError('Valid price is required'); return; }
@@ -102,22 +106,44 @@ export default function CreatePage() {
         }
 
         setStep(2);
-        const walletData = loadWallet();
-        if (!walletData) { setError('Wallet not found. Please reconnect.'); setStep(0); return; }
 
-        // Integrate real minting
-        const walletPkh = getPkhHex(walletData);
-        const mintResult = await mintNFT(
-          walletData.privateKey,
-          walletPkh,
-          walletData.address,
-          metadataResult.ipfsHash,
-          {
-            name: name.trim(),
-            description: description.trim(),
-            image: imageResult.ipfsUri
-          }
-        );
+        let mintResult;
+
+        if (connectionType === 'walletconnect') {
+          // WalletConnect Minting
+          mintResult = await mintNFT(
+            new Uint8Array(0), // Dummy key
+            '',                // Dummy PKH
+            wallet.address,
+            metadataResult.ipfsHash,
+            {
+              name: name.trim(),
+              description: description.trim(),
+              image: imageResult.ipfsUri
+            },
+            'walletconnect',
+            wcSession,
+            wcClient
+          );
+        } else {
+          // Generated Wallet Minting
+          const walletData = loadWallet();
+          if (!walletData) { setError('Wallet not found. Please reconnect.'); setStep(0); return; }
+
+          const walletPkh = getPkhHex(walletData);
+          mintResult = await mintNFT(
+            walletData.privateKey,
+            walletPkh,
+            walletData.address,
+            metadataResult.ipfsHash,
+            {
+              name: name.trim(),
+              description: description.trim(),
+              image: imageResult.ipfsUri
+            },
+            'generated'
+          );
+        }
 
         if (!mintResult.success) { setError(mintResult.error || 'Minting failed'); setStep(0); return; }
 
