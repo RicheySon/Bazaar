@@ -37,6 +37,16 @@ const nextConfig: NextConfig = {
       topLevelAwait: true,
       layers: true, // Enable layers for better WebAssembly support
     };
+
+    // Add externals to ignore specific modules
+    if (!config.externals) {
+      config.externals = [];
+    } else if (!Array.isArray(config.externals)) {
+      // If externals is not an array, convert it to an array
+      config.externals = [config.externals];
+    }
+    config.externals.push('pino-pretty', 'lokijs', 'encoding', 'bufferutil', 'utf-8-validate');
+
     return config;
   },
 };
