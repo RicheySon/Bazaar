@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useContext } from 'react';
+import { Web3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 import {
   Upload, Image as ImageIcon, Video, X, Loader2, Check, ExternalLink,
   Sparkles, Tag, Gavel, Percent, AlertCircle
@@ -17,6 +18,7 @@ type MediaType = 'image' | 'video';
 
 export default function CreatePage() {
   const { wallet, setModalOpen, connectionType } = useWalletStore();
+  const { connector } = useContext(Web3ModalConnectorContext);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState('');
@@ -111,6 +113,7 @@ export default function CreatePage() {
 
         if (connectionType === 'walletconnect') {
           // WalletConnect Minting
+          if (!connector) { throw new Error('WalletConnect connector not found'); }
           mintResult = await mintNFT(
             new Uint8Array(0), // Dummy key
             '',                // Dummy PKH
@@ -121,7 +124,9 @@ export default function CreatePage() {
               description: description.trim(),
               image: imageResult.ipfsUri
             },
-            'walletconnect'
+            'walletconnect',
+            (connector as any).session,
+            connector
           );
         } else {
           // Generated Wallet Minting

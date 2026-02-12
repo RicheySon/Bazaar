@@ -466,23 +466,115 @@ export async function mintNFT(
   metadata: { name: string; description: string; image: string },
   walletType: 'generated' | 'walletconnect' = 'generated',
   wcSession?: any,
-  wcClient?: any
+  wcConnector?: any
 ): Promise<TransactionResult> {
   try {
     if (walletType === 'walletconnect') {
-      // WalletConnect Implementation
-      // TODO: Implement robust transaction construction for external signing.
-      // Currently, CashScript relies on internal construction.
-      // We would need to:
-      // 1. Build the transaction using a library like Libauth or bitcoincashjs
-      // 2. Request signature via wcClient.request({ method: 'bch_signTransaction', ... })
-      // 3. Broadcast signed tx
-
+      // WalletConnect Implementation with external signing
       console.log('WalletConnect Mint initiated', wcSession);
-      return {
-        success: false,
-        error: 'WalletConnect minting is currently implementing external signing. Please use "Create New Wallet" for now.',
-      };
+
+      if (!wcConnector || !wcSession) {
+        return {
+          success: false,
+          error: 'WalletConnect session not available. Please reconnect your wallet.',
+        };
+      }
+
+      try {
+        const electrum = getProvider();
+        const utxos = await electrum.getUtxos(address);
+
+        if (utxos.length === 0) {
+          return {
+            success: false,
+            error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.',
+          };
+        }
+
+        // Select UTXOs - need at least 2000 sats for NFT + fees
+        const fundingUtxos = selectUtxos(utxos, 2000n);
+        const genesisInput = fundingUtxos[0];
+
+        // Token category = txid of first input
+        const category = genesisInput.txid;
+        const commitmentHex = Buffer.from(commitment, 'utf8').toString('hex');
+
+        // Build sourceOutputs for WalletConnect signing
+        const sourceOutputs = fundingUtxos.map(utxo => ({
+          ...utxo,
+          lockingBytecode: (utxo as any).template ? undefined : new Uint8Array(),
+          unlockingBytecode: new Uint8Array(),
+          sequenceNumber: 0,
+          outpointIndex: utxo.vout,
+          outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex').reverse()),
+          valueSatoshis: utxo.satoshis,
+        })) as any;
+
+        // Calculate total input and change
+        const totalInput = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
+        const fee = 1000n; // Approximate fee
+        const nftDust = 1000n;
+        const change = totalInput - nftDust - fee;
+
+        // Build outputs: [NFT output, change output]
+        const outputs: any[] = [
+          {
+            to: address,
+            amount: nftDust,
+            token: {
+              category,
+              amount: 0n,
+              nft: {
+                capability: 'none',
+                commitment: commitmentHex
+              }
+            }
+          }
+        ];
+
+        if (change > 546n) {
+          outputs.push({
+            to: address,
+            amount: change
+          });
+        }
+
+        // Request signature from wallet
+        const signResult = await wcConnector.signTransaction({
+          transaction: {
+            version: 2,
+            inputs: sourceOutputs,
+            outputs: outputs.map(out => ({
+              lockingBytecode: new Uint8Array(), // Wallet will construct this
+              valueSatoshis: out.amount,
+              token: out.token
+            })),
+            locktime: 0
+          } as any,
+          sourceOutputs,
+          broadcast: true, // Request wallet to broadcast
+          userPrompt: `Mint NFT: ${name}`
+        });
+
+        if (!signResult) {
+          return {
+            success: false,
+            error: 'Transaction signing was rejected or failed.'
+          };
+        }
+
+        return {
+          success: true,
+          txid: signResult.signedTransactionHash,
+          tokenCategory: category
+        };
+      } catch (error) {
+        console.error('WalletConnect mint error:', error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'WalletConnect minting failed'
+        };
+      }
     }
 
     // CashTokens genesis: spend a regular UTXO, create output with token data
