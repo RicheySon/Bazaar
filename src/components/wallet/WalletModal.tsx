@@ -52,7 +52,17 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
       // The modal will close when wallet is connected via the useEffect below
     } catch (err) {
       console.error('WalletConnect error detected:', err);
-      setError(err instanceof Error ? err.message : 'Failed to connect wallet');
+
+      // Deep inspection of the error object
+      if (typeof err === 'object' && err !== null) {
+        try {
+          console.error('Error stringified:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
+        } catch (e) {
+          console.error('Could not stringify error');
+        }
+      }
+
+      setError(err instanceof Error ? err.message : JSON.stringify(err) || 'Failed to connect wallet');
     }
   };
 
