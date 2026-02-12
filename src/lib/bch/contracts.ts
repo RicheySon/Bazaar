@@ -2,6 +2,7 @@
 // Handles marketplace and auction contract operations on Chipnet
 
 import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact } from 'cashscript';
+import { decodeCashAddress } from '@bitauth/libauth';
 import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
@@ -500,9 +501,17 @@ export async function mintNFT(
         const commitmentHex = Buffer.from(commitment, 'utf8').toString('hex');
 
         // Build sourceOutputs for WalletConnect signing
+        const decoded = decodeCashAddress(address);
+        if (typeof decoded === 'string') {
+          throw new Error('Invalid address');
+        }
+        const pkh = decoded.payload;
+        // P2PKH Script: 76 a9 14 <pkh> 88 ac
+        const lockingBytecode = new Uint8Array([0x76, 0xa9, 0x14, ...pkh, 0x88, 0xac]);
+
         const sourceOutputs = fundingUtxos.map(utxo => ({
           ...utxo,
-          lockingBytecode: (utxo as any).template ? undefined : new Uint8Array(),
+          lockingBytecode: lockingBytecode,
           unlockingBytecode: new Uint8Array(),
           sequenceNumber: 0,
           outpointIndex: utxo.vout,
