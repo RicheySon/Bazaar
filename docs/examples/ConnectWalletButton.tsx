@@ -33,7 +33,6 @@ export function ConnectWalletButton() {
                 Object.keys(localStorage)
                     .filter(key => key.includes('walletconnect') || key.startsWith('wc@'))
                     .forEach(key => localStorage.removeItem(key));
-                window.location.reload();
             }
         } finally {
             setLoading(false);

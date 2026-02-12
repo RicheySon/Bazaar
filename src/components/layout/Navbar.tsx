@@ -134,7 +134,10 @@ export function Navbar() {
           isConnected: true,
         });
       }
-    }).catch(() => { });
+    }).catch((err) => {
+      console.warn('Failed to fetch wallet data:', err);
+      // Keep existing wallet state if fetch fails, don't crash
+    });
   };
 
   // Load wallet from localStorage on mount

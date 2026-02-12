@@ -101,7 +101,7 @@ export default function HomePage() {
           setListings(apiListings);
         }
       } catch (err) {
-        console.error('Failed to load listings:', err);
+        console.warn('Failed to load listings (API might be unavailable):', err);
       } finally {
         setLoading(false);
       }
@@ -165,11 +165,10 @@ export default function HomePage() {
                     <button
                       key={tf}
                       onClick={() => setTimeFilter(tf)}
-                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                        timeFilter === tf
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${timeFilter === tf
                           ? 'text-[var(--text-primary)]'
                           : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-                      }`}
+                        }`}
                       style={timeFilter === tf ? { background: 'var(--bg-hover)' } : {}}
                     >
                       {tf}

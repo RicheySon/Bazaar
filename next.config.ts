@@ -20,6 +20,7 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  transpilePackages: ['@bitauth/libauth', '@bch-wc2/web3modal-connector'],
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
@@ -34,6 +35,7 @@ const nextConfig: NextConfig = {
     config.experiments = {
       ...config.experiments,
       topLevelAwait: true,
+      layers: true, // Enable layers for better WebAssembly support
     };
     return config;
   },
