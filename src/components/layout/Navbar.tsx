@@ -15,7 +15,102 @@ import { loadWallet } from '@/lib/bch/wallet';
 import { fetchWalletData } from '@/lib/bch/api-client';
 import { disconnectWallet } from '@/lib/bch/walletconnect';
 
-// ... (NavDropdown component remains unchanged)
+interface DropdownItem {
+  href: string;
+  label: string;
+  icon: React.ElementType;
+  description?: string;
+}
+
+interface NavSection {
+  label: string;
+  items: DropdownItem[];
+}
+
+const navSections: NavSection[] = [
+  {
+    label: 'Trade',
+    items: [
+      { href: '/', label: 'Trending', icon: TrendingUp, description: 'Top collections by volume' },
+      { href: '/explore', label: 'Explore', icon: LayoutGrid, description: 'Browse all NFTs' },
+      { href: '/activity', label: 'Activity', icon: Activity, description: 'Live transaction feed' },
+    ],
+  },
+  {
+    label: 'Mint',
+    items: [
+      { href: '/create', label: 'Create NFT', icon: PlusCircle, description: 'Mint a new CashToken NFT' },
+      { href: '/explore?filter=auction', label: 'Auctions', icon: Layers, description: 'Live English auctions' },
+    ],
+  },
+  {
+    label: 'Build',
+    items: [
+      { href: '/build', label: 'Developer Tools', icon: Code2, description: 'SDK & API access' },
+      { href: '/build#docs', label: 'Documentation', icon: BookOpen, description: 'Integration guides' },
+      { href: '/build#api', label: 'API Explorer', icon: Terminal, description: 'Test endpoints live' },
+    ],
+  },
+];
+
+function NavDropdown({ section }: { section: NavSection }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${open ? 'text-[var(--text-primary)] bg-[var(--bg-hover)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+      >
+        {section.label}
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="absolute top-full left-0 mt-1 w-64 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] shadow-xl overflow-hidden z-50"
+          >
+            <div className="p-1.5">
+              {section.items.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setOpen(false)}
+                  className="flex items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors group"
+                >
+                  <item.icon className="h-4 w-4 mt-0.5 text-[var(--text-muted)] group-hover:text-[var(--accent)]" />
+                  <div>
+                    <div className="text-sm font-medium text-[var(--text-primary)]">{item.label}</div>
+                    {item.description && (
+                      <div className="text-xs text-[var(--text-muted)] mt-0.5">{item.description}</div>
+                    )}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 export function Navbar() {
   const { wallet, setWallet, isModalOpen, setModalOpen, disconnect, connectionType } = useWalletStore();
