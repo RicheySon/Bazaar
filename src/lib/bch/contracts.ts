@@ -2,7 +2,7 @@
 // Handles marketplace and auction contract operations on Chipnet
 
 import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact } from 'cashscript';
-import { decodeCashAddress } from '@bitauth/libauth';
+import { decodeCashAddress, encodeTransaction, binToHex } from '@bitauth/libauth';
 import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
@@ -458,133 +458,134 @@ export async function claimAuction(
   }
 }
 
-// Mint a new CashTokens NFT
+// Build WalletConnect mint transaction params (used by create page)
+// Returns hex-encoded transaction + sourceOutputs for signTransaction, or an error
+export async function buildWcMintParams(
+  address: string,
+  commitment: string,
+  metadata: { name: string; description: string; image: string }
+): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  category: string;
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const electrum = getProvider();
+    console.log('[WC Mint] Fetching UTXOs for', address);
+    const utxos = await electrum.getUtxos(address);
+    console.log('[WC Mint] Got', utxos.length, 'UTXOs');
+
+    if (utxos.length === 0) {
+      return { error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.' };
+    }
+
+    const fundingUtxos = selectUtxos(utxos, 2000n);
+    const genesisInput = fundingUtxos[0];
+    const category = genesisInput.txid;
+    const commitmentBytes = new Uint8Array(Buffer.from(commitment, 'utf8'));
+
+    const decoded = decodeCashAddress(address);
+    if (typeof decoded === 'string') {
+      return { error: 'Invalid address: ' + decoded };
+    }
+    const addrPkh = decoded.payload;
+    const lockingBytecode = new Uint8Array([0x76, 0xa9, 0x14, ...addrPkh, 0x88, 0xac]);
+
+    // sourceOutputs: libauth Input & Output fields
+    const sourceOutputs = fundingUtxos.map(utxo => ({
+      outpointIndex: utxo.vout,
+      outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex').reverse()),
+      sequenceNumber: 0xfffffffe,
+      unlockingBytecode: new Uint8Array(),
+      lockingBytecode: lockingBytecode,
+      valueSatoshis: utxo.satoshis,
+    }));
+
+    const totalInput = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 1000n;
+    const nftDust = 1000n;
+    const change = totalInput - nftDust - fee;
+
+    const categoryBytes = new Uint8Array(Buffer.from(category, 'hex').reverse());
+
+    const txOutputs: Array<{
+      lockingBytecode: Uint8Array;
+      valueSatoshis: bigint;
+      token?: {
+        category: Uint8Array;
+        amount: bigint;
+        nft?: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array };
+      };
+    }> = [
+        {
+          lockingBytecode: lockingBytecode,
+          valueSatoshis: nftDust,
+          token: {
+            category: categoryBytes,
+            amount: 0n,
+            nft: {
+              capability: 'none' as const,
+              commitment: commitmentBytes,
+            }
+          }
+        }
+      ];
+
+    if (change > 546n) {
+      txOutputs.push({
+        lockingBytecode: lockingBytecode,
+        valueSatoshis: change,
+      });
+    }
+
+    // Build the libauth Transaction object
+    const transaction = {
+      version: 2,
+      inputs: sourceOutputs.map(so => ({
+        outpointIndex: so.outpointIndex,
+        outpointTransactionHash: so.outpointTransactionHash,
+        sequenceNumber: so.sequenceNumber,
+        unlockingBytecode: so.unlockingBytecode,
+      })),
+      outputs: txOutputs,
+      locktime: 0,
+    };
+
+    // Encode to raw hex — bypasses the stringify() serialization issue
+    // The WcSignTransactionRequest accepts `transaction: Transaction | string`
+    const txBytes = encodeTransaction(transaction);
+    const transactionHex = binToHex(txBytes);
+
+    console.log('[WC Mint] Built tx:', fundingUtxos.length, 'inputs,', txOutputs.length, 'outputs');
+    console.log('[WC Mint] Category:', category);
+    console.log('[WC Mint] Total input:', totalInput.toString(), 'fee:', fee.toString(), 'change:', change.toString());
+    console.log('[WC Mint] Tx hex length:', transactionHex.length, 'bytes:', txBytes.length);
+    console.log('[WC Mint] Returning transaction object for WalletConnect');
+
+    return {
+      transactionHex,
+      transaction, // Return the full object
+      sourceOutputs,
+      category,
+      userPrompt: `Mint NFT: ${metadata.name}`,
+    };
+  } catch (error) {
+    console.error('[WC Mint] buildWcMintParams error:', error);
+    return { error: error instanceof Error ? error.message : 'Failed to build transaction' };
+  }
+}
+
+// Mint a new CashTokens NFT (generated wallet path only)
 export async function mintNFT(
   privateKey: Uint8Array,
   pkh: string,
-  address: string, // Added argument
-  commitment: string, // IPFS CID or text
+  address: string,
+  commitment: string,
   metadata: { name: string; description: string; image: string },
-  walletType: 'generated' | 'walletconnect' = 'generated',
-  wcSession?: any,
-  wcConnector?: any
 ): Promise<TransactionResult> {
   try {
-    if (walletType === 'walletconnect') {
-      // WalletConnect Implementation with external signing
-      console.log('WalletConnect Mint initiated', wcSession);
-
-      if (!wcConnector || !wcSession) {
-        return {
-          success: false,
-          error: 'WalletConnect session not available. Please reconnect your wallet.',
-        };
-      }
-
-      try {
-        const electrum = getProvider();
-        const utxos = await electrum.getUtxos(address);
-
-        if (utxos.length === 0) {
-          return {
-            success: false,
-            error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.',
-          };
-        }
-
-        // Select UTXOs - need at least 2000 sats for NFT + fees
-        const fundingUtxos = selectUtxos(utxos, 2000n);
-        const genesisInput = fundingUtxos[0];
-
-        // Token category = txid of first input
-        const category = genesisInput.txid;
-        const commitmentHex = Buffer.from(commitment, 'utf8').toString('hex');
-
-        // Build sourceOutputs for WalletConnect signing
-        const decoded = decodeCashAddress(address);
-        if (typeof decoded === 'string') {
-          throw new Error('Invalid address');
-        }
-        const pkh = decoded.payload;
-        // P2PKH Script: 76 a9 14 <pkh> 88 ac
-        const lockingBytecode = new Uint8Array([0x76, 0xa9, 0x14, ...pkh, 0x88, 0xac]);
-
-        const sourceOutputs = fundingUtxos.map(utxo => ({
-          ...utxo,
-          lockingBytecode: lockingBytecode,
-          unlockingBytecode: new Uint8Array(),
-          sequenceNumber: 0,
-          outpointIndex: utxo.vout,
-          outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex').reverse()),
-          valueSatoshis: utxo.satoshis,
-        })) as any;
-
-        // Calculate total input and change
-        const totalInput = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
-        const fee = 1000n; // Approximate fee
-        const nftDust = 1000n;
-        const change = totalInput - nftDust - fee;
-
-        // Build outputs: [NFT output, change output]
-        const outputs: any[] = [
-          {
-            to: address,
-            amount: nftDust,
-            token: {
-              category,
-              amount: 0n,
-              nft: {
-                capability: 'none',
-                commitment: commitmentHex
-              }
-            }
-          }
-        ];
-
-        if (change > 546n) {
-          outputs.push({
-            to: address,
-            amount: change
-          });
-        }
-
-        // Request signature from wallet
-        const signResult = await wcConnector.signTransaction({
-          transaction: {
-            version: 2,
-            inputs: sourceOutputs,
-            outputs: outputs.map(out => ({
-              lockingBytecode: new Uint8Array(), // Wallet will construct this
-              valueSatoshis: out.amount,
-              token: out.token
-            })),
-            locktime: 0
-          } as any,
-          sourceOutputs,
-          broadcast: true, // Request wallet to broadcast
-          userPrompt: `Mint NFT: ${name}`
-        });
-
-        if (!signResult) {
-          return {
-            success: false,
-            error: 'Transaction signing was rejected or failed.'
-          };
-        }
-
-        return {
-          success: true,
-          txid: signResult.signedTransactionHash,
-          tokenCategory: category
-        };
-      } catch (error) {
-        console.error('WalletConnect mint error:', error);
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'WalletConnect minting failed'
-        };
-      }
-    }
 
     // CashTokens genesis: spend a regular UTXO, create output with token data
     // Token category = txid of input being spent (specifically the 0th input)

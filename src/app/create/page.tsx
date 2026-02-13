@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useContext } from 'react';
-import { Web3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
+import { useState, useRef } from 'react';
+import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 import {
   Upload, Image as ImageIcon, Video, X, Loader2, Check, ExternalLink,
   Sparkles, Tag, Gavel, Percent, AlertCircle
@@ -10,7 +10,7 @@ import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
 import { prepareMint } from '@/lib/bch/api-client';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
-import { mintNFT } from '@/lib/bch/contracts';
+import { mintNFT, buildWcMintParams } from '@/lib/bch/contracts';
 import { getExplorerTxUrl } from '@/lib/bch/config';
 
 type ListingMode = 'fixed' | 'auction';
@@ -18,7 +18,7 @@ type MediaType = 'image' | 'video';
 
 export default function CreatePage() {
   const { wallet, setModalOpen, connectionType } = useWalletStore();
-  const { connector } = useContext(Web3ModalConnectorContext);
+  const { signTransaction } = useWeb3ModalConnectorContext();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState('');
@@ -112,22 +112,61 @@ export default function CreatePage() {
         let mintResult;
 
         if (connectionType === 'walletconnect') {
-          // WalletConnect Minting
-          if (!connector) { throw new Error('WalletConnect connector not found'); }
-          mintResult = await mintNFT(
-            new Uint8Array(0), // Dummy key
-            '',                // Dummy PKH
+          // WalletConnect Minting - build tx params, then sign via context
+          const wcParams = await buildWcMintParams(
             wallet.address,
             metadataResult.ipfsHash,
-            {
-              name: name.trim(),
-              description: description.trim(),
-              image: imageResult.ipfsUri
-            },
-            'walletconnect',
-            (connector as any).session,
-            connector
+            { name: name.trim(), description: description.trim(), image: imageResult.ipfsUri }
           );
+
+          if ('error' in wcParams) {
+            setError(wcParams.error);
+            setStep(0);
+            return;
+          }
+
+          console.log('[Create] Calling signTransaction from context...');
+          console.log('[Create] signTransaction available:', typeof signTransaction === 'function');
+
+          try {
+            // Use context's signTransaction directly (properly bound to connector)
+            // Pass transaction as hex string to bypass stringify() serialization issues
+            // Add 90s timeout so user doesn't wait forever
+            console.log('[Create] Sending signTransaction with hex string, length:', wcParams.transactionHex.length);
+            const signPromise = signTransaction({
+              transaction: wcParams.transaction,
+              sourceOutputs: wcParams.sourceOutputs as any,
+              broadcast: true,
+              userPrompt: wcParams.userPrompt,
+            });
+
+            const timeoutPromise = new Promise<undefined>((_, reject) =>
+              setTimeout(() => reject(new Error('Signing request timed out after 90 seconds. The wallet may not have received the request.')), 90000)
+            );
+
+            const signResult = await Promise.race([signPromise, timeoutPromise]);
+
+            if (!signResult) {
+              mintResult = { success: false, error: 'Transaction signing was rejected by wallet.' };
+            } else {
+              mintResult = {
+                success: true,
+                txid: signResult.signedTransactionHash,
+                tokenCategory: wcParams.category,
+              };
+            }
+          } catch (signError: unknown) {
+            console.error('[Create] signTransaction error:', signError);
+            console.error('[Create] signTransaction error type:', typeof signError);
+            if (signError && typeof signError === 'object') {
+              console.error('[Create] signTransaction error keys:', Object.keys(signError as object));
+              try { console.error('[Create] signTransaction error JSON:', JSON.stringify(signError)); } catch { }
+            }
+            const msg = signError instanceof Error
+              ? signError.message
+              : 'Wallet did not respond. Make sure your wallet app is open and connected.';
+            mintResult = { success: false, error: msg };
+          }
         } else {
           // Generated Wallet Minting
           const walletData = loadWallet();
@@ -144,7 +183,6 @@ export default function CreatePage() {
               description: description.trim(),
               image: imageResult.ipfsUri
             },
-            'generated'
           );
         }
 
@@ -161,8 +199,18 @@ export default function CreatePage() {
         setTxid('demo_tx_' + Date.now().toString(16));
         setStep(4);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error occurred');
+    } catch (err: unknown) {
+      let msg = 'Unknown error occurred';
+      if (err instanceof Error) {
+        msg = err.message;
+      } else if (typeof err === 'string') {
+        msg = err;
+      } else if (err && typeof err === 'object') {
+        const e = err as Record<string, unknown>;
+        msg = (e.message as string) || JSON.stringify(err) || msg;
+        if (msg === '{}') msg = 'Request expired or was rejected by wallet. Please try again.';
+      }
+      setError(msg);
       setStep(0);
     }
   };

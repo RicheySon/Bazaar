@@ -192,8 +192,8 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       </svg>
                     </div>
                     <div className="text-left">
-                      <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Connect Selene Wallet</div>
-                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Use your existing BCH wallet</div>
+                      <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Connect BCH Wallet</div>
+                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>WalletConnect (Selene, Cashonize, etc.)</div>
                     </div>
                   </button>
 
