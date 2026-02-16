@@ -7,8 +7,12 @@ module.exports = {
     },
     testMatch: ['**/tests/**/*.test.ts', '**/*.test.ts'],
     transform: {
-        '^.+\\.tsx?$': ['ts-jest', {
+        '^.+\\.[tj]sx?$': ['ts-jest', {
             tsconfig: 'tsconfig.json',
+            useESM: true,
         }],
     },
+    transformIgnorePatterns: [
+        'node_modules/(?!(@bch-wc2|@bitauth|cashscript|@noble|@scure)/)',
+    ],
 };

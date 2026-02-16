@@ -497,8 +497,8 @@ export async function buildWcMintParams(
     const sourceOutputs = fundingUtxos.map(utxo => ({
       outpointIndex: utxo.vout,
       outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex').reverse()),
-      sequenceNumber: 0xfffffffe,
-      unlockingBytecode: new Uint8Array(),
+      sequenceNumber: 0xffffffff, // Final, non-RBF
+      unlockingBytecode: new Uint8Array(), // CRITICAL: Empty so wallet recognizes it needs signing
       lockingBytecode: lockingBytecode,
       valueSatoshis: utxo.satoshis,
     }));
@@ -558,11 +558,45 @@ export async function buildWcMintParams(
     const txBytes = encodeTransaction(transaction);
     const transactionHex = binToHex(txBytes);
 
+    console.log('[WC Mint] ========== TRANSACTION DEBUG ==========');
     console.log('[WC Mint] Built tx:', fundingUtxos.length, 'inputs,', txOutputs.length, 'outputs');
-    console.log('[WC Mint] Category:', category);
-    console.log('[WC Mint] Total input:', totalInput.toString(), 'fee:', fee.toString(), 'change:', change.toString());
-    console.log('[WC Mint] Tx hex length:', transactionHex.length, 'bytes:', txBytes.length);
-    console.log('[WC Mint] Returning transaction object for WalletConnect');
+    console.log('[WC Mint] Category (hex):', category);
+    console.log('[WC Mint] Category (bytes):', categoryBytes);
+    console.log('[WC Mint] Commitment (string):', commitment);
+    console.log('[WC Mint] Commitment (bytes):', commitmentBytes);
+    console.log('[WC Mint] Total input:', totalInput.toString(), 'satoshis');
+    console.log('[WC Mint] Fee:', fee.toString(), 'satoshis');
+    console.log('[WC Mint] Change:', change.toString(), 'satoshis');
+    console.log('[WC Mint] NFT Dust:', nftDust.toString(), 'satoshis');
+    console.log('[WC Mint] Tx hex length:', transactionHex.length, 'chars, bytes:', txBytes.length);
+    console.log('[WC Mint] Transaction object:', JSON.stringify({
+      version: transaction.version,
+      inputs: transaction.inputs.map(inp => ({
+        outpointIndex: inp.outpointIndex,
+        outpointTransactionHash: binToHex(inp.outpointTransactionHash),
+        sequenceNumber: inp.sequenceNumber,
+        unlockingBytecode: binToHex(inp.unlockingBytecode), // Should be empty
+      })),
+      outputs: transaction.outputs.map(out => ({
+        lockingBytecode: binToHex(out.lockingBytecode),
+        valueSatoshis: out.valueSatoshis.toString(),
+        token: out.token ? {
+          category: binToHex(out.token.category),
+          amount: out.token.amount.toString(),
+          nft: out.token.nft
+        } : undefined,
+      })),
+      locktime: transaction.locktime,
+    }, null, 2));
+    console.log('[WC Mint] SourceOutputs:', JSON.stringify(sourceOutputs.map(so => ({
+      outpointIndex: so.outpointIndex,
+      outpointTransactionHash: binToHex(so.outpointTransactionHash),
+      sequenceNumber: so.sequenceNumber,
+      unlockingBytecode: binToHex(so.unlockingBytecode), // Should be empty ''
+      lockingBytecode: binToHex(so.lockingBytecode),
+      valueSatoshis: so.valueSatoshis.toString(),
+    })), null, 2));
+    console.log('[WC Mint] ==========================================');
 
     return {
       transactionHex,
