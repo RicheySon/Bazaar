@@ -8,7 +8,7 @@ import { fetchMarketplaceListings } from '@/lib/bch/api-client';
 import type { ListingFilter, SortOption, NFTListing, AuctionListing } from '@/lib/types';
 
 export default function ExplorePage() {
-  const { listings, auctions, isLoading, filter, sort, searchQuery, setFilter, setSort, setSearchQuery, setLoading, setListings } = useNFTStore();
+  const { listings, auctions, isLoading, filter, sort, searchQuery, setFilter, setSort, setSearchQuery, setLoading, setListings, setAuctions } = useNFTStore();
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   useEffect(() => {
@@ -20,11 +20,27 @@ export default function ExplorePage() {
           const apiListings: NFTListing[] = data.listings.map((l) => ({
             txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
             commitment: l.commitment, satoshis: 0, price: BigInt(l.price),
-            sellerAddress: l.seller, sellerPkh: '', creatorAddress: l.seller,
-            creatorPkh: '', royaltyBasisPoints: l.royaltyBasisPoints,
+            sellerAddress: l.seller, sellerPkh: l.sellerPkh || '', creatorAddress: l.creator || l.seller,
+            creatorPkh: l.creatorPkh || '', royaltyBasisPoints: l.royaltyBasisPoints,
             status: 'active' as const, listingType: 'fixed' as const,
+            metadata: l.metadata,
+          }));
+          const apiAuctions = data.auctions.map((a) => ({
+            txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
+            commitment: a.commitment, satoshis: 0, price: BigInt(a.currentBid || a.minBid),
+            sellerAddress: a.seller, sellerPkh: a.sellerPkh || '', creatorAddress: a.creator || a.seller,
+            creatorPkh: a.creatorPkh || '', royaltyBasisPoints: a.royaltyBasisPoints,
+            status: (a.status || 'active') as any, listingType: 'auction' as const,
+            minBid: BigInt(a.minBid || '0'),
+            currentBid: BigInt(a.currentBid || '0'),
+            currentBidder: a.currentBidder || '',
+            endTime: a.endTime || 0,
+            minBidIncrement: BigInt(a.minBidIncrement || '0'),
+            bidHistory: a.bidHistory || [],
+            metadata: a.metadata,
           }));
           setListings(apiListings);
+          setAuctions(apiAuctions);
         }
       } catch (err) {
         console.error('Failed to load listings:', err);
@@ -35,7 +51,7 @@ export default function ExplorePage() {
     loadListings();
     const interval = setInterval(loadListings, 10000);
     return () => clearInterval(interval);
-  }, [setLoading, setListings]);
+  }, [setLoading, setListings, setAuctions]);
 
   const allListings: (NFTListing | AuctionListing)[] = [...listings, ...auctions];
 

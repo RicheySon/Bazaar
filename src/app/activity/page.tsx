@@ -1,14 +1,14 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import {
   Activity, ArrowUpRight, ArrowDownRight, ShoppingCart,
-  Tag, Gavel, RefreshCw, ExternalLink
+  Tag, Gavel, RefreshCw
 } from 'lucide-react';
 import { useNFTStore } from '@/lib/store/nft-store';
 import { fetchMarketplaceListings } from '@/lib/bch/api-client';
-import { formatBCH, shortenAddress } from '@/lib/utils';
+import { formatBCH, shortenAddress, timeAgo } from '@/lib/utils';
 import type { NFTListing } from '@/lib/types';
 
 type ActivityType = 'sale' | 'list' | 'bid' | 'mint' | 'transfer';
@@ -22,6 +22,7 @@ interface ActivityEvent {
   from: string;
   to: string;
   time: string;
+  timestamp: number;
   txid: string;
 }
 
@@ -42,13 +43,12 @@ const filterOptions: { value: ActivityType | 'all'; label: string }[] = [
 ];
 
 export default function ActivityPage() {
-  const { listings, setLoading, setListings } = useNFTStore();
+  const { listings, auctions, setLoading, setListings, setAuctions } = useNFTStore();
   const [filter, setFilter] = useState<ActivityType | 'all'>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
 
-  useEffect(() => {
-    const load = async () => {
+  const loadActivity = useCallback(async () => {
       setLoading(true);
       try {
         const data = await fetchMarketplaceListings();
@@ -56,28 +56,84 @@ export default function ActivityPage() {
           const apiListings: NFTListing[] = data.listings.map((l) => ({
             txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
             commitment: l.commitment, satoshis: 0, price: BigInt(l.price),
-            sellerAddress: l.seller, sellerPkh: '', creatorAddress: l.seller,
-            creatorPkh: '', royaltyBasisPoints: l.royaltyBasisPoints,
+            sellerAddress: l.seller, sellerPkh: l.sellerPkh || '', creatorAddress: l.creator || l.seller,
+            creatorPkh: l.creatorPkh || '', royaltyBasisPoints: l.royaltyBasisPoints,
             status: 'active' as const, listingType: 'fixed' as const,
+            metadata: l.metadata,
+          }));
+          const apiAuctions = data.auctions.map((a) => ({
+            txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
+            commitment: a.commitment, satoshis: 0, price: BigInt(a.currentBid || a.minBid),
+            sellerAddress: a.seller, sellerPkh: a.sellerPkh || '', creatorAddress: a.creator || a.seller,
+            creatorPkh: a.creatorPkh || '', royaltyBasisPoints: a.royaltyBasisPoints,
+            status: (a.status || 'active') as any, listingType: 'auction' as const,
+            minBid: BigInt(a.minBid || '0'),
+            currentBid: BigInt(a.currentBid || '0'),
+            currentBidder: a.currentBidder || '',
+            endTime: a.endTime || 0,
+            minBidIncrement: BigInt(a.minBidIncrement || '0'),
+            bidHistory: a.bidHistory || [],
+            metadata: a.metadata,
           }));
           setListings(apiListings);
+          setAuctions(apiAuctions);
 
-          // Generate activity events from listings
-          const types: ActivityType[] = ['sale', 'list', 'bid', 'mint', 'transfer'];
-          const generated: ActivityEvent[] = apiListings.flatMap((l, i) => {
-            const seed = l.txid ? parseInt(l.txid.slice(0, 8), 16) : i;
-            return types.slice(0, (seed % 3) + 1).map((t, j) => ({
-              id: `${l.txid}-${j}`,
-              type: t,
+          // Generate activity events from real listings and bids
+          const combined = [...apiListings, ...apiAuctions];
+          const generated: ActivityEvent[] = [];
+
+          combined.forEach((l: any) => {
+            const createdAt = l.createdAt || Date.now();
+            generated.push({
+              id: `${l.txid}-list`,
+              type: 'list',
               name: l.metadata?.name || `Token #${l.tokenCategory?.slice(0, 6)}`,
               tokenId: l.tokenCategory || '',
               price: formatBCH(l.price),
               from: l.sellerAddress,
               to: l.creatorAddress || l.sellerAddress,
-              time: `${(i * 5 + j * 2 + 1)}m ago`,
+              time: timeAgo(Math.floor(createdAt / 1000)),
+              timestamp: createdAt,
               txid: l.txid,
-            }));
+            });
+
+            if (l.listingType === 'auction') {
+              const bids = l.bidHistory || [];
+              bids.forEach((b: any, idx: number) => {
+                const ts = b.timestamp || Date.now();
+                generated.push({
+                  id: `${l.txid}-bid-${idx}`,
+                  type: 'bid',
+                  name: l.metadata?.name || `Token #${l.tokenCategory?.slice(0, 6)}`,
+                  tokenId: l.tokenCategory || '',
+                  price: formatBCH(BigInt(b.amount || '0')),
+                  from: b.bidder,
+                  to: l.sellerAddress,
+                  time: timeAgo(Math.floor(ts / 1000)),
+                  timestamp: ts,
+                  txid: b.txid || l.txid,
+                });
+              });
+            }
+
+            if (l.status === 'sold') {
+              const updatedAt = l.updatedAt || Date.now();
+              generated.push({
+                id: `${l.txid}-sale`,
+                type: 'sale',
+                name: l.metadata?.name || `Token #${l.tokenCategory?.slice(0, 6)}`,
+                tokenId: l.tokenCategory || '',
+                price: formatBCH(l.price),
+                from: l.sellerAddress,
+                to: l.creatorAddress || l.sellerAddress,
+                time: timeAgo(Math.floor(updatedAt / 1000)),
+                timestamp: updatedAt,
+                txid: l.txid,
+              });
+            }
           });
+
+          generated.sort((a, b) => b.timestamp - a.timestamp);
           setEvents(generated);
         }
       } catch (err) {
@@ -85,15 +141,17 @@ export default function ActivityPage() {
       } finally {
         setLoading(false);
       }
-    };
-    load();
-    const interval = setInterval(load, 15000);
+  }, [setLoading, setListings, setAuctions]);
+
+  useEffect(() => {
+    loadActivity();
+    const interval = setInterval(loadActivity, 15000);
     return () => clearInterval(interval);
-  }, [setLoading, setListings]);
+  }, [loadActivity]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await new Promise((r) => setTimeout(r, 1000));
+    await loadActivity();
     setIsRefreshing(false);
   };
 

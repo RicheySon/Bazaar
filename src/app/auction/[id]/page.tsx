@@ -6,17 +6,23 @@ import Image from 'next/image';
 import Link from 'next/link';
 import {
   ArrowLeft, Gavel, Clock, User, TrendingUp, Shield, Loader2,
-  Check, AlertCircle, ExternalLink, ChevronDown, History
+  Check, AlertCircle, ChevronDown, History
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, timeRemaining, ipfsToHttp } from '@/lib/utils';
-import type { AuctionListing, AuctionBid } from '@/lib/types';
+import { fetchMarketplaceListingById, recordMarketplaceBid, updateMarketplaceListingStatus } from '@/lib/bch/api-client';
+import { placeBid, claimAuction, cancelListing, buildWcBidParams, buildWcClaimParams } from '@/lib/bch/contracts';
+import { loadWallet } from '@/lib/bch/wallet';
+import type { AuctionListing } from '@/lib/types';
+import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 
 export default function AuctionPage() {
   const params = useParams();
   const id = params.id as string;
-  const { wallet, setModalOpen } = useWalletStore();
+  const { wallet, setModalOpen, connectionType } = useWalletStore();
+  const { signTransaction } = useWeb3ModalConnectorContext();
+  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
   const { bchUsd, fetchPrice } = usePriceStore();
 
   useEffect(() => { fetchPrice(); }, [fetchPrice]);
@@ -32,10 +38,43 @@ export default function AuctionPage() {
   useEffect(() => {
     setIsLoading(true);
     // Fetch auction data
-    setTimeout(() => {
-      setAuction(null);
-      setIsLoading(false);
-    }, 1000);
+    const load = async () => {
+      try {
+        const data = await fetchMarketplaceListingById(id);
+        if (data && data.minBid) {
+          const mapped: AuctionListing = {
+            txid: data.txid,
+            vout: 0,
+            tokenCategory: data.tokenCategory,
+            commitment: data.commitment || '',
+            satoshis: 0,
+            price: BigInt(data.currentBid || data.minBid || '0'),
+            sellerAddress: data.seller,
+            sellerPkh: data.sellerPkh || '',
+            creatorAddress: data.creator || data.seller,
+            creatorPkh: data.creatorPkh || '',
+            royaltyBasisPoints: data.royaltyBasisPoints || 0,
+            status: data.status || 'active',
+            listingType: 'auction',
+            minBid: BigInt(data.minBid || '0'),
+            currentBid: BigInt(data.currentBid || '0'),
+            currentBidder: data.currentBidder || '',
+            endTime: data.endTime || 0,
+            minBidIncrement: BigInt(data.minBidIncrement || '0'),
+            bidHistory: data.bidHistory || [],
+            metadata: data.metadata,
+          };
+          setAuction(mapped);
+        } else {
+          setAuction(null);
+        }
+      } catch (err) {
+        console.error('Failed to load auction:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    load();
   }, [id]);
 
   // Countdown timer
@@ -58,15 +97,159 @@ export default function AuctionPage() {
       setError('Enter a valid bid amount');
       return;
     }
+    if (auction) {
+      if (auction.status !== 'active') {
+        setError('Auction is not active');
+        return;
+      }
+      const bidSats = BigInt(Math.floor(amount * 1e8));
+      const minRequired = auction.currentBid > 0n ? auction.currentBid + auction.minBidIncrement : auction.minBid;
+      if (bidSats < minRequired) {
+        setError(`Bid must be at least ${formatBCH(minRequired)}`);
+        return;
+      }
+    }
 
     setIsBidding(true);
     setError('');
     try {
-      // In full implementation: execute bid via auction contract
-      await new Promise((r) => setTimeout(r, 2000));
-      setBidAmount('');
+      if (!auction) throw new Error('Auction not found');
+      const bidSats = BigInt(Math.floor(amount * 1e8));
+
+      if (connectionType === 'walletconnect') {
+        const wcParams = await buildWcBidParams({
+          auction,
+          bidAmount: bidSats,
+          bidderAddress: wallet.address,
+        });
+        if ('error' in wcParams) throw new Error(wcParams.error);
+
+        const wcRequest = wcPayloadMode === 'raw'
+          ? {
+              transaction: wcParams.transaction,
+              sourceOutputs: wcParams.sourceOutputs as any,
+            }
+          : {
+              transaction: wcParams.transactionHex,
+              sourceOutputs: wcParams.sourceOutputsJson as any,
+            };
+
+        const signResult = await signTransaction({
+          ...wcRequest,
+          broadcast: true,
+          userPrompt: wcParams.userPrompt,
+        });
+        if (!signResult) throw new Error('Bid transaction was rejected by wallet.');
+
+        await recordMarketplaceBid(id, wallet.address, bidSats.toString(), signResult.signedTransactionHash || '');
+        setAuction((prev) => prev ? ({
+          ...prev,
+          currentBid: bidSats,
+          currentBidder: wallet.address,
+          bidHistory: [
+            ...(prev.bidHistory || []),
+            { bidder: wallet.address, amount: bidSats, txid: signResult.signedTransactionHash || '', timestamp: Date.now() },
+          ],
+        }) : prev);
+        setBidAmount('');
+      } else {
+        const walletData = loadWallet();
+        if (!walletData) throw new Error('Wallet not found. Please reconnect.');
+
+        const result = await placeBid(walletData.privateKey, auction, bidSats, walletData.address);
+        if (!result.success) throw new Error(result.error || 'Bid failed');
+
+        await recordMarketplaceBid(id, walletData.address, bidSats.toString(), result.txid || '');
+        setAuction((prev) => prev ? ({
+          ...prev,
+          currentBid: bidSats,
+          currentBidder: walletData.address,
+          bidHistory: [
+            ...(prev.bidHistory || []),
+            { bidder: walletData.address, amount: bidSats, txid: result.txid || '', timestamp: Date.now() },
+          ],
+        }) : prev);
+        setBidAmount('');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Bid failed');
+    } finally {
+      setIsBidding(false);
+    }
+  };
+
+  const handleClaim = async () => {
+    if (!wallet?.isConnected) {
+      setModalOpen(true);
+      return;
+    }
+    setIsBidding(true);
+    setError('');
+    try {
+      if (!auction) throw new Error('Auction not found');
+      if (connectionType === 'walletconnect') {
+        const wcParams = await buildWcClaimParams({
+          auction,
+          winnerAddress: wallet.address,
+        });
+        if ('error' in wcParams) throw new Error(wcParams.error);
+
+        const wcRequest = wcPayloadMode === 'raw'
+          ? {
+              transaction: wcParams.transaction,
+              sourceOutputs: wcParams.sourceOutputs as any,
+            }
+          : {
+              transaction: wcParams.transactionHex,
+              sourceOutputs: wcParams.sourceOutputsJson as any,
+            };
+
+        const signResult = await signTransaction({
+          ...wcRequest,
+          broadcast: true,
+          userPrompt: wcParams.userPrompt,
+        });
+        if (!signResult) throw new Error('Claim transaction was rejected by wallet.');
+
+        await updateMarketplaceListingStatus(id, 'sold');
+        setAuction((prev) => prev ? { ...prev, status: 'sold' } : prev);
+      } else {
+        const walletData = loadWallet();
+        if (!walletData) throw new Error('Wallet not found. Please reconnect.');
+
+        const result = await claimAuction(walletData.privateKey, auction, walletData.address);
+        if (!result.success) throw new Error(result.error || 'Claim failed');
+        await updateMarketplaceListingStatus(id, 'sold');
+        setAuction((prev) => prev ? { ...prev, status: 'sold' } : prev);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Claim failed');
+    } finally {
+      setIsBidding(false);
+    }
+  };
+
+  const handleReclaim = async () => {
+    if (!wallet?.isConnected) {
+      setModalOpen(true);
+      return;
+    }
+    setIsBidding(true);
+    setError('');
+    try {
+      if (!auction) throw new Error('Auction not found');
+      if (connectionType === 'walletconnect') {
+        throw new Error('WalletConnect reclaim is not supported yet. Use the generated wallet for now.');
+      }
+      const walletData = loadWallet();
+      if (!walletData) throw new Error('Wallet not found. Please reconnect.');
+
+      const result = await cancelListing(walletData.privateKey, auction);
+      if (!result.success) throw new Error(result.error || 'Reclaim failed');
+      await updateMarketplaceListingStatus(id, 'cancelled');
+      setAuction((prev) => prev ? { ...prev, status: 'cancelled' } : prev);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reclaim failed');
     } finally {
       setIsBidding(false);
     }
@@ -87,11 +270,40 @@ export default function AuctionPage() {
     );
   }
 
+  if (!auction) {
+    return (
+      <div className="px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mx-auto max-w-4xl">
+          <Link
+            href="/explore"
+            className="inline-flex items-center gap-2 text-sm hover:text-white mb-6"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to Explore
+          </Link>
+          <div className="card p-8 text-center">
+            <AlertCircle className="h-8 w-8 mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <div className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Auction not found
+            </div>
+            <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              The auction may have ended or been cancelled.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const displayName = auction?.metadata?.name || `Auction #${id.slice(0, 12)}`;
   const isEnded = auction ? auction.endTime <= Math.floor(Date.now() / 1000) : false;
   const currentBid = auction?.currentBid || 0n;
   const minBid = auction?.minBid || 0n;
   const bidHistory = auction?.bidHistory || [];
+  const isActive = auction?.status === 'active';
+  const isWinner = auction && wallet?.address && auction.currentBidder === wallet.address;
+  const canReclaim = auction && isEnded && currentBid === 0n && wallet?.address === auction.sellerAddress;
 
   return (
     <div className="px-4 sm:px-6 lg:px-8 py-8">
@@ -194,14 +406,14 @@ export default function AuctionPage() {
                 Automatic refund for outbid bidders via atomic transaction
               </div>
 
-              {!isEnded ? (
+              {!isEnded && isActive ? (
                 <div className="space-y-3">
                   <div className="relative">
                     <input
                       type="number"
                       value={bidAmount}
                       onChange={(e) => { setBidAmount(e.target.value); setError(''); }}
-                      placeholder={`Min: ${formatBCH(currentBid > 0n ? currentBid + 1000n : minBid)}`}
+                      placeholder={`Min: ${formatBCH(currentBid > 0n ? currentBid + (auction?.minBidIncrement || 1000n) : minBid)}`}
                       step="0.00000001"
                       min="0"
                       className="input-field pr-16"
@@ -233,11 +445,33 @@ export default function AuctionPage() {
                 </div>
               ) : (
                 <div className="p-4 rounded-xl text-center" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', borderWidth: '1px' }}>
-                  <p style={{ color: 'var(--text-muted)' }}>This auction has ended</p>
+                  <p style={{ color: 'var(--text-muted)' }}>
+                    {isActive ? 'This auction has ended' : 'This auction is not active'}
+                  </p>
                   {currentBid > 0n && (
                     <p className="text-sm mt-1" style={{ color: 'var(--accent-purple)' }}>
                       Winning bid: {formatBCH(currentBid)}
                     </p>
+                  )}
+
+                  {isWinner && (
+                    <button
+                      onClick={handleClaim}
+                      disabled={isBidding}
+                      className="btn-primary w-full mt-4 py-3 text-sm"
+                    >
+                      {isBidding ? 'Claiming...' : 'Claim NFT'}
+                    </button>
+                  )}
+
+                  {canReclaim && (
+                    <button
+                      onClick={handleReclaim}
+                      disabled={isBidding}
+                      className="btn-secondary w-full mt-3 py-2 text-sm"
+                    >
+                      {isBidding ? 'Reclaiming...' : 'Reclaim NFT'}
+                    </button>
                   )}
                 </div>
               )}

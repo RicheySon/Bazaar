@@ -16,6 +16,7 @@ interface WalletModalProps {
 export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const { setWallet, setConnectionType } = useWalletStore();
   const { connect, address, isConnected } = useWeb3ModalConnectorContext();
+  const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
   const [mode, setMode] = useState<'choose' | 'create' | 'restore'>('choose');
   const [mnemonic, setMnemonic] = useState('');
   const [newWalletData, setNewWalletData] = useState<WalletData | null>(null);
@@ -39,14 +40,20 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
 
   const handleWalletConnect = async () => {
     try {
-      console.log('--- STARTING WALLETCONNECT ---');
-      console.log('Connect function available:', !!connect);
+      if (wcDebug) {
+        console.log('--- STARTING WALLETCONNECT ---');
+        console.log('Connect function available:', !!connect);
+      }
 
       setError('');
       // This opens the WalletConnect QR modal
-      console.log('Calling await connect()...');
+      if (wcDebug) {
+        console.log('Calling await connect()...');
+      }
       await connect();
-      console.log('connect() returned successfully');
+      if (wcDebug) {
+        console.log('connect() returned successfully');
+      }
 
       // Don't close our modal here - let useWalletSync handle wallet state
       // The modal will close when wallet is connected via the useEffect below
@@ -55,10 +62,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
 
       // Deep inspection of the error object
       if (typeof err === 'object' && err !== null) {
-        try {
-          console.error('Error stringified:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
-        } catch (e) {
-          console.error('Could not stringify error');
+        if (wcDebug) {
+          try {
+            console.error('Error stringified:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
+          } catch (e) {
+            console.error('Could not stringify error');
+          }
         }
       }
 

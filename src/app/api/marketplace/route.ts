@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ElectrumNetworkProvider } from 'cashscript';
+import { decodeCashAddress } from '@bitauth/libauth';
+import { getMarketplaceData } from '@/lib/server/marketplace-indexer';
+import { upsertListing } from '@/lib/server/marketplace-store';
 
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
 
@@ -10,20 +13,8 @@ function getProvider(): ElectrumNetworkProvider {
 // GET /api/marketplace - Fetch all active listings
 export async function GET(request: NextRequest) {
   try {
-    // In full implementation:
-    // 1. Maintain a list of known marketplace contract addresses
-    // 2. Query each for UTXOs with CashTokens
-    // 3. Parse the contract params from the locking bytecode
-    // 4. Return structured listing data
-
-    // For the hackathon, we return an empty array
-    // Real listings would appear once contracts are deployed and NFTs listed
-    return NextResponse.json({
-      listings: [],
-      auctions: [],
-      total: 0,
-      message: 'Connect wallet and create NFTs to see listings here',
-    });
+    const data = await getMarketplaceData();
+    return NextResponse.json(data);
   } catch (error) {
     console.error('Marketplace API error:', error);
     return NextResponse.json(
@@ -37,47 +28,84 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sellerAddress, tokenCategory, price, royaltyBasisPoints, listingType } = body;
+    const {
+      txid,
+      contractAddress,
+      sellerAddress,
+      creatorAddress,
+      tokenCategory,
+      commitment,
+      price,
+      minBid,
+      endTime,
+      minBidIncrement,
+      royaltyBasisPoints,
+      listingType,
+    } = body;
 
-    if (!sellerAddress || !tokenCategory || !price) {
+    if (!txid || !contractAddress || !sellerAddress || !tokenCategory || !commitment || !listingType) {
       return NextResponse.json(
-        { error: 'Missing required fields: sellerAddress, tokenCategory, price' },
+        { error: 'Missing required fields: txid, contractAddress, sellerAddress, tokenCategory, commitment, listingType' },
         { status: 400 }
       );
+    }
+
+    if (listingType === 'fixed' && !price) {
+      return NextResponse.json({ error: 'Missing price for fixed listing' }, { status: 400 });
+    }
+    if (listingType === 'auction' && (!minBid || !endTime)) {
+      return NextResponse.json({ error: 'Missing minBid or endTime for auction' }, { status: 400 });
     }
 
     const electrum = getProvider();
 
-    // Verify the seller owns the NFT
-    const utxos = await electrum.getUtxos(sellerAddress);
-    const nftUtxo = utxos.find(
-      (u) => u.token?.category === tokenCategory && u.token?.nft
+    const contractUtxos = await electrum.getUtxos(contractAddress);
+    const contractHasNft = contractUtxos.find(
+      (u) => u.token?.category === tokenCategory && (u.token?.nft?.commitment || '') === commitment
     );
 
-    if (!nftUtxo) {
+    if (!contractHasNft) {
       return NextResponse.json(
-        { error: 'NFT not found in seller wallet' },
+        { error: 'Contract does not hold the listed NFT' },
         { status: 400 }
       );
     }
 
-    // For the hackathon: return the listing data
-    // Full implementation would build and broadcast the listing transaction
-    return NextResponse.json({
-      success: true,
-      listing: {
-        type: listingType || 'fixed',
-        tokenCategory,
-        price: price.toString(),
-        royaltyBasisPoints: royaltyBasisPoints || 1000,
-        seller: sellerAddress,
-        nftUtxo: {
-          txid: nftUtxo.txid,
-          vout: nftUtxo.vout,
-          commitment: nftUtxo.token?.nft?.commitment || '',
-        },
-      },
+    const decodedSeller = decodeCashAddress(sellerAddress);
+    if (typeof decodedSeller === 'string') {
+      return NextResponse.json({ error: 'Invalid seller address' }, { status: 400 });
+    }
+    const decodedCreator = decodeCashAddress(creatorAddress || sellerAddress);
+    if (typeof decodedCreator === 'string') {
+      return NextResponse.json({ error: 'Invalid creator address' }, { status: 400 });
+    }
+
+    const now = Date.now();
+
+    await upsertListing({
+      id: txid,
+      listingType,
+      contractAddress,
+      tokenCategory,
+      commitment,
+      sellerAddress,
+      sellerPkh: Buffer.from(decodedSeller.payload).toString('hex'),
+      creatorAddress: creatorAddress || sellerAddress,
+      creatorPkh: Buffer.from(decodedCreator.payload).toString('hex'),
+      royaltyBasisPoints: royaltyBasisPoints || 1000,
+      price: price ? price.toString() : undefined,
+      minBid: minBid ? minBid.toString() : undefined,
+      minBidIncrement: minBidIncrement ? minBidIncrement.toString() : undefined,
+      endTime: endTime || undefined,
+      currentBid: '0',
+      currentBidder: '',
+      bidHistory: [],
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
     });
+
+    return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Create listing error:', error);
     return NextResponse.json(

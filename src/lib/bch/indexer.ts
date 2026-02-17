@@ -1,36 +1,69 @@
 // BCH Chipnet NFT Indexer
-// Queries the Electrum server for marketplace listings and NFTs
+// Uses API-backed registry listings and Electrum for wallet NFTs
 
 import { getProvider, getUtxos, getTokenUtxos } from './contracts';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
 import type { NFTListing, AuctionListing, NFTMetadata } from '@/lib/types';
-import { bytesToHex } from '@/lib/utils';
+import { hexToUtf8, isHexString } from '@/lib/utils';
+import { fetchMarketplaceListings, fetchMarketplaceListingById } from '@/lib/bch/api-client';
 
 // Cache for fetched metadata
 const metadataCache = new Map<string, NFTMetadata>();
 
-// Fetch all active marketplace listings
+// Fetch all active marketplace listings (from registry-backed API)
 export async function fetchListings(): Promise<NFTListing[]> {
   try {
-    // In full implementation:
-    // 1. Query known marketplace contract addresses
-    // 2. Get UTXOs with CashTokens from those addresses
-    // 3. Parse commitment data to get IPFS CID
-    // 4. Fetch metadata from IPFS
-    // 5. Return structured listing data
-
-    // For hackathon demo, we query token UTXOs and present them
-    return [];
+    const data = await fetchMarketplaceListings();
+    if (!data) return [];
+    return data.listings.map((l) => ({
+      txid: l.txid,
+      vout: 0,
+      tokenCategory: l.tokenCategory,
+      commitment: l.commitment,
+      satoshis: 0,
+      price: BigInt(l.price),
+      sellerAddress: l.seller,
+      sellerPkh: l.sellerPkh || '',
+      creatorAddress: l.creator || l.seller,
+      creatorPkh: l.creatorPkh || '',
+      royaltyBasisPoints: l.royaltyBasisPoints,
+      status: (l.status || 'active') as any,
+      listingType: 'fixed',
+      metadata: l.metadata,
+    }));
   } catch (error) {
     console.error('Failed to fetch listings:', error);
     return [];
   }
 }
 
-// Fetch active auctions
+// Fetch active auctions (from registry-backed API)
 export async function fetchAuctions(): Promise<AuctionListing[]> {
   try {
-    return [];
+    const data = await fetchMarketplaceListings();
+    if (!data) return [];
+    return data.auctions.map((a) => ({
+      txid: a.txid,
+      vout: 0,
+      tokenCategory: a.tokenCategory,
+      commitment: a.commitment || '',
+      satoshis: 0,
+      price: BigInt(a.currentBid || a.minBid || '0'),
+      sellerAddress: a.seller,
+      sellerPkh: a.sellerPkh || '',
+      creatorAddress: a.creator || a.seller,
+      creatorPkh: a.creatorPkh || '',
+      royaltyBasisPoints: a.royaltyBasisPoints,
+      status: (a.status || 'active') as any,
+      listingType: 'auction',
+      minBid: BigInt(a.minBid || '0'),
+      currentBid: BigInt(a.currentBid || '0'),
+      currentBidder: a.currentBidder || '',
+      endTime: a.endTime || 0,
+      minBidIncrement: BigInt(a.minBidIncrement || '0'),
+      bidHistory: a.bidHistory || [],
+      metadata: a.metadata,
+    }));
   } catch (error) {
     console.error('Failed to fetch auctions:', error);
     return [];
@@ -87,8 +120,10 @@ async function fetchNFTMetadata(commitment: string): Promise<NFTMetadata | null>
   }
 
   try {
+    const cid = isHexString(commitment) ? hexToUtf8(commitment) : commitment;
+    if (!cid) return null;
     // The commitment stores the IPFS CID
-    const ipfsUri = `ipfs://${commitment}`;
+    const ipfsUri = `ipfs://${cid}`;
     const data = await fetchMetadataFromIPFS(ipfsUri);
 
     if (data) {
@@ -111,36 +146,71 @@ async function fetchNFTMetadata(commitment: string): Promise<NFTMetadata | null>
   return null;
 }
 
-// Fetch a single listing by transaction ID
+// Fetch a single listing by transaction ID (registry-backed)
 export async function fetchListingByTxid(txid: string): Promise<NFTListing | null> {
   try {
-    // In full implementation: query the specific UTXO
-    // For now, search through known listings
-    const listings = await fetchListings();
-    return listings.find((l) => l.txid === txid) || null;
+    const data = await fetchMarketplaceListingById(txid);
+    if (!data || data.minBid) return null;
+    return {
+      txid: data.txid,
+      vout: 0,
+      tokenCategory: data.tokenCategory,
+      commitment: data.commitment || '',
+      satoshis: 0,
+      price: BigInt(data.price || '0'),
+      sellerAddress: data.seller,
+      sellerPkh: data.sellerPkh || '',
+      creatorAddress: data.creator || data.seller,
+      creatorPkh: data.creatorPkh || '',
+      royaltyBasisPoints: data.royaltyBasisPoints || 0,
+      status: (data.status || 'active') as any,
+      listingType: 'fixed',
+      metadata: data.metadata,
+    };
   } catch (error) {
     console.error('Failed to fetch listing:', error);
     return null;
   }
 }
 
-// Fetch auction by ID
+// Fetch auction by ID (registry-backed)
 export async function fetchAuctionById(auctionId: string): Promise<AuctionListing | null> {
   try {
-    const auctions = await fetchAuctions();
-    return auctions.find((a) => a.txid === auctionId) || null;
+    const data = await fetchMarketplaceListingById(auctionId);
+    if (!data || !data.minBid) return null;
+    return {
+      txid: data.txid,
+      vout: 0,
+      tokenCategory: data.tokenCategory,
+      commitment: data.commitment || '',
+      satoshis: 0,
+      price: BigInt(data.currentBid || data.minBid || '0'),
+      sellerAddress: data.seller,
+      sellerPkh: data.sellerPkh || '',
+      creatorAddress: data.creator || data.seller,
+      creatorPkh: data.creatorPkh || '',
+      royaltyBasisPoints: data.royaltyBasisPoints || 0,
+      status: (data.status || 'active') as any,
+      listingType: 'auction',
+      minBid: BigInt(data.minBid || '0'),
+      currentBid: BigInt(data.currentBid || '0'),
+      currentBidder: data.currentBidder || '',
+      endTime: data.endTime || 0,
+      minBidIncrement: BigInt(data.minBidIncrement || '0'),
+      bidHistory: data.bidHistory || [],
+      metadata: data.metadata,
+    };
   } catch (error) {
     console.error('Failed to fetch auction:', error);
     return null;
   }
 }
 
-// Get transaction history for an address
+// Get transaction history for an address (not available via ElectrumNetworkProvider)
 export async function getTransactionHistory(address: string): Promise<string[]> {
   try {
     const electrum = getProvider();
     // ElectrumNetworkProvider doesn't expose tx history directly
-    // In full implementation, use raw electrum protocol
     return [];
   } catch (error) {
     console.error('Failed to get tx history:', error);

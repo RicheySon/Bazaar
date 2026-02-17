@@ -1,13 +1,15 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
 module.exports = {
-    preset: 'ts-jest',
+    preset: 'ts-jest/presets/default-esm',
     testEnvironment: 'node',
+    extensionsToTreatAsEsm: ['.ts', '.tsx'],
     moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+        '^(\\.{1,2}/.*)\\.js$': '$1',
     },
     testMatch: ['**/tests/**/*.test.ts', '**/*.test.ts'],
     transform: {
-        '^.+\\.[tj]sx?$': ['ts-jest', {
+        '^.+\\.tsx?$': ['ts-jest', {
             tsconfig: 'tsconfig.json',
             useESM: true,
         }],

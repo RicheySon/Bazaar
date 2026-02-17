@@ -5,19 +5,24 @@ import { useParams } from 'next/navigation';
 import Image from 'next/image';
 import Link from 'next/link';
 import {
-  ArrowLeft, ExternalLink, Tag, Shield, User, Copy, Check,
-  ShoppingCart, Loader2, Heart, Share2, AlertCircle, Percent
+  ArrowLeft, Tag, Shield, User, Copy, Check,
+  ShoppingCart, Loader2, AlertCircle, Percent
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
-import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, satoshisToBCH } from '@/lib/utils';
-import { getExplorerTxUrl, CHIPNET_CONFIG } from '@/lib/bch/config';
+import { formatBCH, formatUSD, shortenAddress, ipfsToHttp } from '@/lib/utils';
+import { fetchMarketplaceListingById, updateMarketplaceListingStatus } from '@/lib/bch/api-client';
+import { buyNFT, buildWcBuyParams } from '@/lib/bch/contracts';
+import { loadWallet } from '@/lib/bch/wallet';
 import type { NFTListing } from '@/lib/types';
+import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 
 export default function NFTDetailPage() {
   const params = useParams();
   const id = params.id as string;
-  const { wallet, setModalOpen } = useWalletStore();
+  const { wallet, setModalOpen, connectionType } = useWalletStore();
+  const { signTransaction } = useWeb3ModalConnectorContext();
+  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
   const { bchUsd, fetchPrice } = usePriceStore();
   const [listing, setListing] = useState<NFTListing | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -33,9 +38,28 @@ export default function NFTDetailPage() {
     const fetchListing = async () => {
       setIsLoading(true);
       try {
-        // In full implementation, fetch from indexer
-        // For now, show the token ID
-        setListing(null);
+        const data = await fetchMarketplaceListingById(id);
+        if (data && !data.minBid) {
+          const mapped: NFTListing = {
+            txid: data.txid,
+            vout: 0,
+            tokenCategory: data.tokenCategory,
+            commitment: data.commitment || '',
+            satoshis: 0,
+            price: BigInt(data.price || '0'),
+            sellerAddress: data.seller,
+            sellerPkh: data.sellerPkh || '',
+            creatorAddress: data.creator || data.seller,
+            creatorPkh: data.creatorPkh || '',
+            royaltyBasisPoints: data.royaltyBasisPoints || 0,
+            status: data.status || 'active',
+            listingType: 'fixed',
+            metadata: data.metadata,
+          };
+          setListing(mapped);
+        } else {
+          setListing(null);
+        }
       } catch (err) {
         console.error('Failed to fetch listing:', err);
       } finally {
@@ -53,9 +77,44 @@ export default function NFTDetailPage() {
     setIsBuying(true);
     setError('');
     try {
-      // In full implementation: execute atomic swap via contract
-      await new Promise((r) => setTimeout(r, 2000));
-      setBuySuccess(true);
+      if (!listing) throw new Error('Listing not found');
+      if (listing.status !== 'active') throw new Error('Listing is no longer active');
+      if (connectionType === 'walletconnect') {
+        const wcParams = await buildWcBuyParams({ listing, buyerAddress: wallet.address });
+        if ('error' in wcParams) throw new Error(wcParams.error);
+
+        const wcRequest = wcPayloadMode === 'raw'
+          ? {
+              transaction: wcParams.transaction,
+              sourceOutputs: wcParams.sourceOutputs as any,
+            }
+          : {
+              transaction: wcParams.transactionHex,
+              sourceOutputs: wcParams.sourceOutputsJson as any,
+            };
+
+        const signResult = await signTransaction({
+          ...wcRequest,
+          broadcast: true,
+          userPrompt: wcParams.userPrompt,
+        });
+
+        if (!signResult) throw new Error('Transaction signing was rejected by wallet.');
+
+        await updateMarketplaceListingStatus(id, 'sold');
+        setListing({ ...listing, status: 'sold' });
+        setBuySuccess(true);
+      } else {
+        const walletData = loadWallet();
+        if (!walletData) throw new Error('Wallet not found. Please reconnect.');
+
+        const result = await buyNFT(walletData.privateKey, listing, walletData.address);
+        if (!result.success) throw new Error(result.error || 'Purchase failed');
+
+        await updateMarketplaceListingStatus(id, 'sold');
+        setListing({ ...listing, status: 'sold' });
+        setBuySuccess(true);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Purchase failed');
     } finally {
@@ -87,6 +146,31 @@ export default function NFTDetailPage() {
     );
   }
 
+  if (!listing) {
+    return (
+      <div className="px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mx-auto max-w-4xl">
+          <Link
+            href="/explore"
+            className="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-white mb-6 transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to Explore
+          </Link>
+          <div className="card p-8 text-center">
+            <AlertCircle className="h-8 w-8 mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <div className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Listing not found
+            </div>
+            <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              The listing may have been sold or cancelled.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Show a generic NFT detail view based on the token ID
   const displayName = listing?.metadata?.name || `Token #${id.slice(0, 12)}`;
   const displayImage = listing?.metadata?.image ? ipfsToHttp(listing.metadata.image) : null;
@@ -94,6 +178,7 @@ export default function NFTDetailPage() {
   const displayRoyalty = listing?.royaltyBasisPoints || 1000;
   const sellerAddr = listing?.sellerAddress || '';
   const creatorAddr = listing?.creatorAddress || '';
+  const isActiveListing = listing?.status === 'active';
 
   return (
     <div className="px-4 sm:px-6 lg:px-8 py-8">
@@ -217,7 +302,7 @@ export default function NFTDetailPage() {
               ) : (
                 <button
                   onClick={handleBuy}
-                  disabled={isBuying}
+                  disabled={isBuying || !isActiveListing}
                   className="btn-primary w-full py-4 text-lg flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   {isBuying ? (
@@ -225,6 +310,8 @@ export default function NFTDetailPage() {
                       <Loader2 className="h-5 w-5 animate-spin" />
                       Processing...
                     </>
+                  ) : !isActiveListing ? (
+                    'Listing Not Active'
                   ) : wallet?.isConnected ? (
                     <>
                       <ShoppingCart className="h-5 w-5" />

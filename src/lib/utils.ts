@@ -74,6 +74,20 @@ export function bytesToHex(bytes: Uint8Array): string {
     .join('');
 }
 
+export function isHexString(value: string): boolean {
+  return /^[0-9a-fA-F]+$/.test(value) && value.length % 2 === 0;
+}
+
+export function hexToUtf8(hex: string): string {
+  const bytes = hexToBytes(hex);
+  return new TextDecoder().decode(bytes);
+}
+
+export function utf8ToHex(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  return bytesToHex(bytes);
+}
+
 export function isValidBCHAddress(address: string): boolean {
   const prefixes = ['bchtest:', 'bitcoincash:', 'bchreg:'];
   return prefixes.some((p) => address.startsWith(p)) && address.length > 20;

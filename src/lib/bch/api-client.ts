@@ -25,16 +25,34 @@ export interface MarketplaceResponse {
     tokenCategory: string;
     price: string;
     seller: string;
+    sellerPkh?: string;
+    creator?: string;
+    creatorPkh?: string;
     commitment: string;
     royaltyBasisPoints: number;
+    status?: string;
+    metadata?: any;
+    createdAt?: number;
+    updatedAt?: number;
   }>;
   auctions: Array<{
     txid: string;
     tokenCategory: string;
     minBid: string;
     currentBid: string;
+    minBidIncrement?: string;
     endTime: number;
     seller: string;
+    sellerPkh?: string;
+    creator?: string;
+    creatorPkh?: string;
+    status?: string;
+    commitment?: string;
+    currentBidder?: string;
+    bidHistory?: any[];
+    metadata?: any;
+    createdAt?: number;
+    updatedAt?: number;
   }>;
   total: number;
 }
@@ -64,6 +82,48 @@ export async function fetchMarketplaceListings(): Promise<MarketplaceResponse | 
   } catch (error) {
     console.error('Network error fetching marketplace:', error);
     return null;
+  }
+}
+
+// Fetch a single listing or auction by id (txid)
+export async function fetchMarketplaceListingById(id: string) {
+  try {
+    const response = await fetch(`/api/marketplace/${encodeURIComponent(id)}`);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.error('Network error fetching listing:', error);
+    return null;
+  }
+}
+
+export async function updateMarketplaceListingStatus(id: string, status: string) {
+  try {
+    const response = await fetch(`/api/marketplace/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'status', status }),
+    });
+    if (!response.ok) return false;
+    return true;
+  } catch (error) {
+    console.error('Network error updating listing:', error);
+    return false;
+  }
+}
+
+export async function recordMarketplaceBid(id: string, bidder: string, amount: string, txid: string) {
+  try {
+    const response = await fetch(`/api/marketplace/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'bid', bidder, amount, txid }),
+    });
+    if (!response.ok) return false;
+    return true;
+  } catch (error) {
+    console.error('Network error recording bid:', error);
+    return false;
   }
 }
 
@@ -99,9 +159,16 @@ export async function prepareMint(address: string, commitment: string, name: str
 
 // Create a marketplace listing
 export async function createListing(params: {
+  txid: string;
+  contractAddress: string;
   sellerAddress: string;
+  creatorAddress?: string;
   tokenCategory: string;
-  price: string;
+  commitment: string;
+  price?: string;
+  minBid?: string;
+  endTime?: number;
+  minBidIncrement?: string;
   royaltyBasisPoints: number;
   listingType: 'fixed' | 'auction';
 }) {

@@ -131,7 +131,7 @@ export function validateMnemonic(mnemonic: string): boolean {
 export function saveWallet(mnemonic: string): void {
   if (typeof window === 'undefined') return;
   // In a production app, encrypt with a password
-  // For hackathon, we store as-is (Chipnet only, no real value)
+  // For development on Chipnet, store as-is
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ mnemonic }));
 }
 

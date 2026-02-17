@@ -2,12 +2,58 @@
 // Handles marketplace and auction contract operations on Chipnet
 
 import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact } from 'cashscript';
-import { decodeCashAddress, encodeTransaction, binToHex } from '@bitauth/libauth';
+import { decodeCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode } from '@bitauth/libauth';
 import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
 import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
+import { hexToBytes, isHexString, utf8ToHex } from '@/lib/utils';
+
+const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
+const wcLog = (...args: unknown[]) => {
+  if (wcDebug) {
+    console.log(...args);
+  }
+};
+
+function getLockingBytecode(address: string): Uint8Array {
+  const decoded = cashAddressToLockingBytecode(address);
+  if (typeof decoded === 'string') {
+    throw new Error('Invalid address: ' + decoded);
+  }
+  return decoded.bytecode;
+}
+
+function buildSourceOutputsJson(sourceOutputs: any[]) {
+  return sourceOutputs.map((so) => ({
+    outpointIndex: so.outpointIndex,
+    outpointTransactionHash: binToHex(so.outpointTransactionHash),
+    sequenceNumber: so.sequenceNumber,
+    unlockingBytecode: binToHex(so.unlockingBytecode),
+    lockingBytecode: binToHex(so.lockingBytecode),
+    valueSatoshis: so.valueSatoshis.toString(),
+    token: so.token
+      ? {
+          amount: so.token.amount.toString(),
+          category: binToHex(so.token.category),
+          nft: so.token.nft
+            ? {
+                capability: so.token.nft.capability,
+                commitment: binToHex(so.token.nft.commitment),
+              }
+            : undefined,
+        }
+      : undefined,
+    contract: so.contract
+      ? {
+          abiFunction: so.contract.abiFunction,
+          redeemScript: binToHex(so.contract.redeemScript),
+          artifact: so.contract.artifact,
+        }
+      : undefined,
+  }));
+}
 
 let provider: ElectrumNetworkProvider | null = null;
 
@@ -123,7 +169,7 @@ export function buildP2PKHContract(pkh: string): Contract {
 export async function createFixedListing(
   privateKey: Uint8Array,
   tokenCategory: string,
-  tokenUtxo: { txid: string; vout: number; satoshis: bigint },
+  tokenUtxo: { txid: string; vout: number; satoshis: bigint; commitment: string; capability?: 'none' | 'mutable' | 'minting' },
   price: bigint,
   creatorPkh: string,
   royaltyBasisPoints: bigint,
@@ -160,11 +206,7 @@ export async function createFixedListing(
       token: {
         category: tokenCategory,
         amount: 0n,
-        nft: { capability: 'none', commitment: '' } // Assumption: commitment empty or should be passed? 
-        // Ideally we should pass full Utxo object.
-        // Using placeholder for now, might fail if commitment mismatch?
-        // CashScript doesn't check commitment on input unless script requires it?
-        // Actually it matters for preserving it in output.
+        nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
       }
     };
 
@@ -199,7 +241,7 @@ export async function createFixedListing(
         token: {
           category: tokenCategory,
           amount: 0n,
-          nft: { capability: 'none', commitment: '' } // TODO: Pass real commitment 
+          nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
         }
       } as any);
 
@@ -213,6 +255,74 @@ export async function createFixedListing(
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Failed to create listing',
+    };
+  }
+}
+
+// Create an auction listing (move NFT into auction contract)
+export async function createAuctionListing(
+  privateKey: Uint8Array,
+  tokenCategory: string,
+  tokenUtxo: { txid: string; vout: number; satoshis: bigint; commitment: string; capability?: 'none' | 'mutable' | 'minting' },
+  minBid: bigint,
+  endTime: bigint,
+  creatorPkh: string,
+  royaltyBasisPoints: bigint,
+  minBidIncrement: bigint,
+  sellerPkh: string
+): Promise<TransactionResult> {
+  try {
+    const auction = buildAuctionContract(
+      sellerPkh,
+      minBid,
+      endTime,
+      creatorPkh,
+      royaltyBasisPoints,
+      minBidIncrement
+    );
+
+    const userContract = buildP2PKHContract(sellerPkh);
+    const signatureTemplate = new SignatureTemplate(privateKey);
+    const sellerPk = signatureTemplate.getPublicKey();
+
+    const nftInput: Utxo = {
+      txid: tokenUtxo.txid,
+      vout: tokenUtxo.vout,
+      satoshis: tokenUtxo.satoshis,
+      token: {
+        category: tokenCategory,
+        amount: 0n,
+        nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
+      }
+    };
+
+    const fundingUtxos = await getUtxos(userContract.address);
+    const feeUtxos = selectUtxos(
+      fundingUtxos.filter(u => u.txid !== tokenUtxo.txid),
+      2000n
+    );
+
+    const tx = userContract.functions.spend(sellerPk, signatureTemplate)
+      .from(nftInput)
+      .from(feeUtxos)
+      .to(auction.address, 1000n, {
+        token: {
+          category: tokenCategory,
+          amount: 0n,
+          nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
+        }
+      } as any);
+
+    const txDetails = await tx.send();
+
+    return {
+      success: true,
+      txid: txDetails.txid,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create auction listing',
     };
   }
 }
@@ -252,8 +362,7 @@ export async function buyNFT(
 
     const tx = contract.functions.buy()
       .from(nftUtxo)
-      .fromP2PKH(fundingUtxos, buyerTemplate) // Buyer pays
-      .to(contract.address, 1000n); // Dust to contract (or nothing? wait, contract doesn't keep anything, it sends all out)
+      .fromP2PKH(fundingUtxos, buyerTemplate); // Buyer pays
 
     // Contract Outputs:
     // 0: Seller
@@ -309,7 +418,7 @@ export async function cancelListing(
         BigInt(auction.endTime),
         listing.creatorPkh,
         BigInt(listing.royaltyBasisPoints),
-        10000n // TODO: Add minBidIncrement to AuctionListing type
+        auction.minBidIncrement
       );
     }
 
@@ -327,14 +436,23 @@ export async function cancelListing(
       tx = contract.functions.cancel(sellerPk, signatureTemplate);
     } else {
       tx = contract.functions.reclaim(sellerPk, signatureTemplate);
+      const auction = listing as AuctionListing;
+      tx.withTime(auction.endTime);
     }
 
+    const sellerUtxos = await getUtxos(listing.sellerAddress);
+    const feeUtxos = selectUtxos(
+      sellerUtxos.filter(u => u.txid !== nftUtxo.txid),
+      2000n
+    );
+
     tx.from(nftUtxo)
+      .fromP2PKH(feeUtxos, signatureTemplate)
       .to(listing.sellerAddress, 1000n, { token: { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } } as any);
 
     return {
       success: true,
-      txid: 'cancel_tx_simulated'
+      txid: (await tx.send()).txid
     };
   } catch (error) {
     return {
@@ -358,7 +476,7 @@ export async function placeBid(
       BigInt(auction.endTime),
       auction.creatorPkh,
       BigInt(auction.royaltyBasisPoints),
-      10000n // TODO: minBidIncrement
+      auction.minBidIncrement
     );
 
     const contractUtxos = await contract.getUtxos();
@@ -367,12 +485,11 @@ export async function placeBid(
 
     const currentBid = auction.currentBid || 0n;
     const prevBidder = auction.currentBidder || auction.sellerAddress;
-
-    // Convert address to bytes20 placeholder (real implementation would decode address)
-    // We need to decode prevBidder address to PKH.
-    // Since we don't have decode helper here, using placeholder.
-    // Ideally use library like `libauth`.
-    const prevBidderPkh = Uint8Array.from(Buffer.alloc(20));
+    const decodedPrev = decodeCashAddress(prevBidder);
+    if (typeof decodedPrev === 'string') {
+      throw new Error('Invalid previous bidder address');
+    }
+    const prevBidderPkh = decodedPrev.payload;
 
     const bidderUtxos = await getUtxos(bidderAddress);
     // Needed: bidAmount + Fee (2000n for safety)
@@ -418,7 +535,7 @@ export async function claimAuction(
       BigInt(auction.endTime),
       auction.creatorPkh,
       BigInt(auction.royaltyBasisPoints),
-      10000n
+      auction.minBidIncrement
     );
 
     const contractUtxos = await contract.getUtxos();
@@ -433,7 +550,8 @@ export async function claimAuction(
 
     const tx = contract.functions.claim(finalBid)
       .from(nftUtxo)
-      .fromP2PKH(feeUtxos, winnerTemplate); // Pay for fees
+      .fromP2PKH(feeUtxos, winnerTemplate) // Pay for fees
+      .withTime(auction.endTime);
 
     const royalty = (finalBid * BigInt(auction.royaltyBasisPoints)) / 10000n;
     const sellerAmount = finalBid - royalty;
@@ -468,14 +586,15 @@ export async function buildWcMintParams(
   transactionHex: string;
   transaction: any;
   sourceOutputs: object[];
+  sourceOutputsJson: object[];
   category: string;
   userPrompt: string;
 } | { error: string }> {
   try {
     const electrum = getProvider();
-    console.log('[WC Mint] Fetching UTXOs for', address);
+    wcLog('[WC Mint] Fetching UTXOs for', address);
     const utxos = await electrum.getUtxos(address);
-    console.log('[WC Mint] Got', utxos.length, 'UTXOs');
+    wcLog('[WC Mint] Got', utxos.length, 'UTXOs');
 
     if (utxos.length === 0) {
       return { error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.' };
@@ -496,7 +615,7 @@ export async function buildWcMintParams(
     // sourceOutputs: libauth Input & Output fields
     const sourceOutputs = fundingUtxos.map(utxo => ({
       outpointIndex: utxo.vout,
-      outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex').reverse()),
+      outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
       sequenceNumber: 0xffffffff, // Final, non-RBF
       unlockingBytecode: new Uint8Array(), // CRITICAL: Empty so wallet recognizes it needs signing
       lockingBytecode: lockingBytecode,
@@ -508,7 +627,7 @@ export async function buildWcMintParams(
     const nftDust = 1000n;
     const change = totalInput - nftDust - fee;
 
-    const categoryBytes = new Uint8Array(Buffer.from(category, 'hex').reverse());
+    const categoryBytes = new Uint8Array(Buffer.from(category, 'hex'));
 
     const txOutputs: Array<{
       lockingBytecode: Uint8Array;
@@ -558,18 +677,18 @@ export async function buildWcMintParams(
     const txBytes = encodeTransaction(transaction);
     const transactionHex = binToHex(txBytes);
 
-    console.log('[WC Mint] ========== TRANSACTION DEBUG ==========');
-    console.log('[WC Mint] Built tx:', fundingUtxos.length, 'inputs,', txOutputs.length, 'outputs');
-    console.log('[WC Mint] Category (hex):', category);
-    console.log('[WC Mint] Category (bytes):', categoryBytes);
-    console.log('[WC Mint] Commitment (string):', commitment);
-    console.log('[WC Mint] Commitment (bytes):', commitmentBytes);
-    console.log('[WC Mint] Total input:', totalInput.toString(), 'satoshis');
-    console.log('[WC Mint] Fee:', fee.toString(), 'satoshis');
-    console.log('[WC Mint] Change:', change.toString(), 'satoshis');
-    console.log('[WC Mint] NFT Dust:', nftDust.toString(), 'satoshis');
-    console.log('[WC Mint] Tx hex length:', transactionHex.length, 'chars, bytes:', txBytes.length);
-    console.log('[WC Mint] Transaction object:', JSON.stringify({
+    wcLog('[WC Mint] ========== TRANSACTION DEBUG ==========');
+    wcLog('[WC Mint] Built tx:', fundingUtxos.length, 'inputs,', txOutputs.length, 'outputs');
+    wcLog('[WC Mint] Category (hex):', category);
+    wcLog('[WC Mint] Category (bytes):', categoryBytes);
+    wcLog('[WC Mint] Commitment (string):', commitment);
+    wcLog('[WC Mint] Commitment (bytes):', commitmentBytes);
+    wcLog('[WC Mint] Total input:', totalInput.toString(), 'satoshis');
+    wcLog('[WC Mint] Fee:', fee.toString(), 'satoshis');
+    wcLog('[WC Mint] Change:', change.toString(), 'satoshis');
+    wcLog('[WC Mint] NFT Dust:', nftDust.toString(), 'satoshis');
+    wcLog('[WC Mint] Tx hex length:', transactionHex.length, 'chars, bytes:', txBytes.length);
+    wcLog('[WC Mint] Transaction object:', JSON.stringify({
       version: transaction.version,
       inputs: transaction.inputs.map(inp => ({
         outpointIndex: inp.outpointIndex,
@@ -588,7 +707,7 @@ export async function buildWcMintParams(
       })),
       locktime: transaction.locktime,
     }, null, 2));
-    console.log('[WC Mint] SourceOutputs:', JSON.stringify(sourceOutputs.map(so => ({
+    wcLog('[WC Mint] SourceOutputs:', JSON.stringify(sourceOutputs.map(so => ({
       outpointIndex: so.outpointIndex,
       outpointTransactionHash: binToHex(so.outpointTransactionHash),
       sequenceNumber: so.sequenceNumber,
@@ -596,18 +715,611 @@ export async function buildWcMintParams(
       lockingBytecode: binToHex(so.lockingBytecode),
       valueSatoshis: so.valueSatoshis.toString(),
     })), null, 2));
-    console.log('[WC Mint] ==========================================');
+    wcLog('[WC Mint] ==========================================');
+
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
 
     return {
       transactionHex,
       transaction, // Return the full object
-      sourceOutputs,
+      sourceOutputs: sourceOutputs,
+      sourceOutputsJson,
       category,
       userPrompt: `Mint NFT: ${metadata.name}`,
     };
   } catch (error) {
     console.error('[WC Mint] buildWcMintParams error:', error);
     return { error: error instanceof Error ? error.message : 'Failed to build transaction' };
+  }
+}
+
+// Build WalletConnect listing params (fixed or auction)
+export async function buildWcListingParams(params: {
+  address: string;
+  tokenCategory: string;
+  listingType: 'fixed' | 'auction';
+  price?: bigint;
+  minBid?: bigint;
+  endTime?: bigint;
+  royaltyBasisPoints: bigint;
+  sellerPkh: string;
+  creatorPkh: string;
+  minBidIncrement?: bigint;
+}): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  sourceOutputsJson: object[];
+  contractAddress: string;
+  commitment: string;
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const electrum = getProvider();
+    const utxos = await electrum.getUtxos(params.address);
+    if (utxos.length === 0) {
+      return { error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.' };
+    }
+
+    const nftUtxo = utxos.find(
+      (u) => u.token?.category === params.tokenCategory && u.token?.nft
+    );
+    if (!nftUtxo || !nftUtxo.token?.nft) {
+      return { error: 'NFT not found in wallet' };
+    }
+
+    const feeUtxos = selectUtxos(
+      utxos.filter((u) => !u.token && u.txid !== nftUtxo.txid),
+      2000n
+    );
+
+    const decoded = decodeCashAddress(params.address);
+    if (typeof decoded === 'string') {
+      return { error: 'Invalid address: ' + decoded };
+    }
+    const addrPkh = decoded.payload;
+    const lockingBytecode = new Uint8Array([0x76, 0xa9, 0x14, ...addrPkh, 0x88, 0xac]);
+
+    const contract =
+      params.listingType === 'fixed'
+        ? buildMarketplaceContract(params.sellerPkh, params.price || 0n, params.creatorPkh, params.royaltyBasisPoints)
+        : buildAuctionContract(
+            params.sellerPkh,
+            params.minBid || 0n,
+            params.endTime || 0n,
+            params.creatorPkh,
+            params.royaltyBasisPoints,
+            params.minBidIncrement || 1000n
+          );
+
+    const commitment = nftUtxo.token.nft.commitment || '';
+    const categoryBytes = new Uint8Array(Buffer.from(params.tokenCategory, 'hex'));
+    const commitmentBytes = hexToBytes(commitment);
+
+    const inputs = [nftUtxo, ...feeUtxos];
+
+    const sourceOutputs = inputs.map((utxo) => {
+      const token = utxo.token
+        ? {
+            amount: utxo.token.amount,
+            category: new Uint8Array(Buffer.from(utxo.token.category, 'hex')),
+            nft: utxo.token.nft
+              ? {
+                  capability: utxo.token.nft.capability,
+                  commitment: hexToBytes(utxo.token.nft.commitment || ''),
+                }
+              : undefined,
+          }
+        : undefined;
+
+      return {
+        outpointIndex: utxo.vout,
+        outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: new Uint8Array(),
+        lockingBytecode: lockingBytecode,
+        valueSatoshis: utxo.satoshis,
+        token,
+      };
+    });
+
+    const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 1000n;
+    const nftDust = 1000n;
+    const change = totalInput - nftDust - fee;
+
+    const contractDecoded = cashAddressToLockingBytecode(contract.address);
+    if (typeof contractDecoded === 'string') {
+      return { error: 'Invalid contract address: ' + contractDecoded };
+    }
+    const contractLockingBytecode = contractDecoded.bytecode;
+
+    const txOutputs: Array<{
+      lockingBytecode: Uint8Array;
+      valueSatoshis: bigint;
+      token?: {
+        category: Uint8Array;
+        amount: bigint;
+        nft?: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array };
+      };
+    }> = [
+      {
+        lockingBytecode: contractLockingBytecode,
+        valueSatoshis: nftDust,
+        token: {
+          category: categoryBytes,
+          amount: 0n,
+          nft: {
+            capability: nftUtxo.token.nft.capability as 'none' | 'mutable' | 'minting',
+            commitment: commitmentBytes,
+          },
+        },
+      },
+    ];
+
+    if (change > 546n) {
+      txOutputs.push({
+        lockingBytecode: lockingBytecode,
+        valueSatoshis: change,
+      });
+    }
+
+    const transaction = {
+      version: 2,
+      inputs: sourceOutputs.map((so) => ({
+        outpointIndex: so.outpointIndex,
+        outpointTransactionHash: so.outpointTransactionHash,
+        sequenceNumber: so.sequenceNumber,
+        unlockingBytecode: so.unlockingBytecode,
+      })),
+      outputs: txOutputs,
+      locktime: 0,
+    };
+
+    const txBytes = encodeTransaction(transaction);
+    const transactionHex = binToHex(txBytes);
+
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
+
+    return {
+      transactionHex,
+      transaction,
+      sourceOutputs: sourceOutputs,
+      sourceOutputsJson,
+      contractAddress: contract.address,
+      commitment,
+      userPrompt: params.listingType === 'fixed' ? 'Create fixed-price listing' : 'Create auction listing',
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Failed to build listing transaction' };
+  }
+}
+
+// Build WalletConnect buy params for fixed-price listing
+export async function buildWcBuyParams(params: {
+  listing: NFTListing;
+  buyerAddress: string;
+}): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  sourceOutputsJson: object[];
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const { listing, buyerAddress } = params;
+
+    if (listing.listingType !== 'fixed') {
+      return { error: 'Listing is not fixed price' };
+    }
+
+    let sellerPkh = listing.sellerPkh || '';
+    if (!sellerPkh) {
+      const decodedSeller = decodeCashAddress(listing.sellerAddress);
+      if (typeof decodedSeller === 'string') {
+        return { error: 'Invalid seller address' };
+      }
+      sellerPkh = Buffer.from(decodedSeller.payload).toString('hex');
+    }
+
+    let creatorPkh = listing.creatorPkh || '';
+    if (!creatorPkh) {
+      const decodedCreator = decodeCashAddress(listing.creatorAddress);
+      if (typeof decodedCreator === 'string') {
+        return { error: 'Invalid creator address' };
+      }
+      creatorPkh = Buffer.from(decodedCreator.payload).toString('hex');
+    }
+
+    const contract = buildMarketplaceContract(
+      sellerPkh,
+      listing.price,
+      creatorPkh,
+      BigInt(listing.royaltyBasisPoints)
+    );
+
+    const contractUtxos = await contract.getUtxos();
+    const contractUtxo = contractUtxos.find((u) => u.token?.category === listing.tokenCategory);
+    if (!contractUtxo || !contractUtxo.token?.nft) {
+      return { error: 'NFT not found in contract' };
+    }
+
+    const buyerUtxos = await getUtxos(buyerAddress);
+    const fundingUtxos = selectUtxos(buyerUtxos, listing.price + 2000n);
+
+    const buyerLockingBytecode = getLockingBytecode(buyerAddress);
+    const sellerLockingBytecode = getLockingBytecode(listing.sellerAddress);
+    const creatorLockingBytecode = getLockingBytecode(listing.creatorAddress);
+    const contractLockingBytecode = getLockingBytecode(contract.address);
+
+    const tokenCategoryBytes = new Uint8Array(Buffer.from(contractUtxo.token.category, 'hex'));
+    const commitmentBytes = hexToBytes(contractUtxo.token.nft.commitment || '');
+    const token = {
+      category: tokenCategoryBytes,
+      amount: 0n,
+      nft: {
+        capability: contractUtxo.token.nft.capability,
+        commitment: commitmentBytes,
+      },
+    };
+
+    const inputs = [contractUtxo, ...fundingUtxos];
+    const sourceOutputs = inputs.map((utxo, idx) => {
+      const isContractInput = idx === 0;
+      return {
+        outpointIndex: utxo.vout,
+        outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: new Uint8Array(),
+        lockingBytecode: isContractInput ? contractLockingBytecode : buyerLockingBytecode,
+        valueSatoshis: utxo.satoshis,
+        token: isContractInput ? token : undefined,
+        contract: isContractInput
+          ? {
+              abiFunction: contract.artifact.abi.find((fn) => fn.name === 'buy'),
+              redeemScript: hexToBytes(contract.bytecode),
+              artifact: contract.artifact,
+            }
+          : undefined,
+      };
+    });
+
+    const royalty = (listing.price * BigInt(listing.royaltyBasisPoints)) / 10000n;
+    const sellerAmount = listing.price - royalty;
+
+    const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
+      { lockingBytecode: sellerLockingBytecode, valueSatoshis: sellerAmount },
+      { lockingBytecode: creatorLockingBytecode, valueSatoshis: royalty },
+      { lockingBytecode: buyerLockingBytecode, valueSatoshis: 1000n, token },
+    ];
+
+    const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 1000n;
+    const change = totalInput - sellerAmount - royalty - 1000n - fee;
+    if (change > 546n) {
+      outputs.push({ lockingBytecode: buyerLockingBytecode, valueSatoshis: change });
+    }
+
+    const transaction = {
+      version: 2,
+      inputs: sourceOutputs.map((so) => ({
+        outpointIndex: so.outpointIndex,
+        outpointTransactionHash: so.outpointTransactionHash,
+        sequenceNumber: so.sequenceNumber,
+        unlockingBytecode: so.unlockingBytecode,
+      })),
+      outputs,
+      locktime: 0,
+    };
+
+    const contractUnlocker = contract.unlock.buy();
+    const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
+      transaction,
+      sourceOutputs,
+      inputIndex: 0,
+    });
+    transaction.inputs[0].unlockingBytecode = contractUnlocking;
+
+    const transactionHex = binToHex(encodeTransaction(transaction));
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
+
+    return {
+      transactionHex,
+      transaction,
+      sourceOutputs,
+      sourceOutputsJson,
+      userPrompt: `Buy NFT: ${listing.metadata?.name || listing.tokenCategory.slice(0, 8)}`,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Failed to build buy transaction' };
+  }
+}
+
+// Build WalletConnect bid params for auction listing
+export async function buildWcBidParams(params: {
+  auction: AuctionListing;
+  bidAmount: bigint;
+  bidderAddress: string;
+}): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  sourceOutputsJson: object[];
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const { auction, bidAmount, bidderAddress } = params;
+
+    let sellerPkh = auction.sellerPkh || '';
+    if (!sellerPkh) {
+      const decodedSeller = decodeCashAddress(auction.sellerAddress);
+      if (typeof decodedSeller === 'string') {
+        return { error: 'Invalid seller address' };
+      }
+      sellerPkh = Buffer.from(decodedSeller.payload).toString('hex');
+    }
+
+    let creatorPkh = auction.creatorPkh || '';
+    if (!creatorPkh) {
+      const decodedCreator = decodeCashAddress(auction.creatorAddress);
+      if (typeof decodedCreator === 'string') {
+        return { error: 'Invalid creator address' };
+      }
+      creatorPkh = Buffer.from(decodedCreator.payload).toString('hex');
+    }
+
+    const contract = buildAuctionContract(
+      sellerPkh,
+      auction.minBid,
+      BigInt(auction.endTime),
+      creatorPkh,
+      BigInt(auction.royaltyBasisPoints),
+      auction.minBidIncrement
+    );
+
+    const contractUtxos = await contract.getUtxos();
+    const contractUtxo = contractUtxos.find((u) => u.token?.category === auction.tokenCategory);
+    if (!contractUtxo || !contractUtxo.token?.nft) {
+      return { error: 'NFT not found in auction contract' };
+    }
+
+    const currentBid = auction.currentBid || 0n;
+    const prevBidder = auction.currentBidder || auction.sellerAddress;
+    const decodedPrev = decodeCashAddress(prevBidder);
+    if (typeof decodedPrev === 'string') {
+      return { error: 'Invalid previous bidder address' };
+    }
+    const prevBidderPkhHex = Buffer.from(decodedPrev.payload).toString('hex');
+
+    const bidderUtxos = await getUtxos(bidderAddress);
+    const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 2000n);
+
+    const bidderLockingBytecode = getLockingBytecode(bidderAddress);
+    const contractLockingBytecode = getLockingBytecode(contract.address);
+
+    const tokenCategoryBytes = new Uint8Array(Buffer.from(contractUtxo.token.category, 'hex'));
+    const commitmentBytes = hexToBytes(contractUtxo.token.nft.commitment || '');
+    const token = {
+      category: tokenCategoryBytes,
+      amount: 0n,
+      nft: {
+        capability: contractUtxo.token.nft.capability,
+        commitment: commitmentBytes,
+      },
+    };
+
+    const inputs = [contractUtxo, ...fundingUtxos];
+    const sourceOutputs = inputs.map((utxo, idx) => {
+      const isContractInput = idx === 0;
+      return {
+        outpointIndex: utxo.vout,
+        outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: new Uint8Array(),
+        lockingBytecode: isContractInput ? contractLockingBytecode : bidderLockingBytecode,
+        valueSatoshis: utxo.satoshis,
+        token: isContractInput ? token : undefined,
+        contract: isContractInput
+          ? {
+              abiFunction: contract.artifact.abi.find((fn) => fn.name === 'bid'),
+              redeemScript: hexToBytes(contract.bytecode),
+              artifact: contract.artifact,
+            }
+          : undefined,
+      };
+    });
+
+    const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
+      { lockingBytecode: contractLockingBytecode, valueSatoshis: bidAmount, token },
+    ];
+
+    if (currentBid > 0n) {
+      const prevBidderLockingBytecode = getLockingBytecode(prevBidder);
+      outputs.push({ lockingBytecode: prevBidderLockingBytecode, valueSatoshis: currentBid });
+    }
+
+    const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 1000n;
+    const change = totalInput - bidAmount - (currentBid > 0n ? currentBid : 0n) - fee;
+    if (change > 546n) {
+      outputs.push({ lockingBytecode: bidderLockingBytecode, valueSatoshis: change });
+    }
+
+    const transaction = {
+      version: 2,
+      inputs: sourceOutputs.map((so) => ({
+        outpointIndex: so.outpointIndex,
+        outpointTransactionHash: so.outpointTransactionHash,
+        sequenceNumber: so.sequenceNumber,
+        unlockingBytecode: so.unlockingBytecode,
+      })),
+      outputs,
+      locktime: 0,
+    };
+
+    const contractUnlocker = contract.unlock.bid(currentBid, prevBidderPkhHex);
+    const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
+      transaction,
+      sourceOutputs,
+      inputIndex: 0,
+    });
+    transaction.inputs[0].unlockingBytecode = contractUnlocking;
+
+    const transactionHex = binToHex(encodeTransaction(transaction));
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
+
+    return {
+      transactionHex,
+      transaction,
+      sourceOutputs,
+      sourceOutputsJson,
+      userPrompt: `Place bid: ${auction.metadata?.name || auction.tokenCategory.slice(0, 8)}`,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Failed to build bid transaction' };
+  }
+}
+
+// Build WalletConnect claim params for auction listing
+export async function buildWcClaimParams(params: {
+  auction: AuctionListing;
+  winnerAddress: string;
+}): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  sourceOutputsJson: object[];
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const { auction, winnerAddress } = params;
+
+    let sellerPkh = auction.sellerPkh || '';
+    if (!sellerPkh) {
+      const decodedSeller = decodeCashAddress(auction.sellerAddress);
+      if (typeof decodedSeller === 'string') {
+        return { error: 'Invalid seller address' };
+      }
+      sellerPkh = Buffer.from(decodedSeller.payload).toString('hex');
+    }
+
+    let creatorPkh = auction.creatorPkh || '';
+    if (!creatorPkh) {
+      const decodedCreator = decodeCashAddress(auction.creatorAddress);
+      if (typeof decodedCreator === 'string') {
+        return { error: 'Invalid creator address' };
+      }
+      creatorPkh = Buffer.from(decodedCreator.payload).toString('hex');
+    }
+
+    const contract = buildAuctionContract(
+      sellerPkh,
+      auction.minBid,
+      BigInt(auction.endTime),
+      creatorPkh,
+      BigInt(auction.royaltyBasisPoints),
+      auction.minBidIncrement
+    );
+
+    const contractUtxos = await contract.getUtxos();
+    const contractUtxo = contractUtxos.find((u) => u.token?.category === auction.tokenCategory);
+    if (!contractUtxo || !contractUtxo.token?.nft) {
+      return { error: 'NFT not found in auction contract' };
+    }
+
+    const finalBid = auction.currentBid || 0n;
+    if (finalBid <= 0n) {
+      return { error: 'No winning bid to claim' };
+    }
+
+    const winnerUtxos = await getUtxos(winnerAddress);
+    const feeUtxos = selectUtxos(winnerUtxos, 2000n);
+
+    const winnerLockingBytecode = getLockingBytecode(winnerAddress);
+    const sellerLockingBytecode = getLockingBytecode(auction.sellerAddress);
+    const creatorLockingBytecode = getLockingBytecode(auction.creatorAddress);
+    const contractLockingBytecode = getLockingBytecode(contract.address);
+
+    const tokenCategoryBytes = new Uint8Array(Buffer.from(contractUtxo.token.category, 'hex'));
+    const commitmentBytes = hexToBytes(contractUtxo.token.nft.commitment || '');
+    const token = {
+      category: tokenCategoryBytes,
+      amount: 0n,
+      nft: {
+        capability: contractUtxo.token.nft.capability,
+        commitment: commitmentBytes,
+      },
+    };
+
+    const inputs = [contractUtxo, ...feeUtxos];
+    const sourceOutputs = inputs.map((utxo, idx) => {
+      const isContractInput = idx === 0;
+      return {
+        outpointIndex: utxo.vout,
+        outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
+        sequenceNumber: 0xfffffffe,
+        unlockingBytecode: new Uint8Array(),
+        lockingBytecode: isContractInput ? contractLockingBytecode : winnerLockingBytecode,
+        valueSatoshis: utxo.satoshis,
+        token: isContractInput ? token : undefined,
+        contract: isContractInput
+          ? {
+              abiFunction: contract.artifact.abi.find((fn) => fn.name === 'claim'),
+              redeemScript: hexToBytes(contract.bytecode),
+              artifact: contract.artifact,
+            }
+          : undefined,
+      };
+    });
+
+    const royalty = (finalBid * BigInt(auction.royaltyBasisPoints)) / 10000n;
+    const sellerAmount = finalBid - royalty;
+
+    const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
+      { lockingBytecode: sellerLockingBytecode, valueSatoshis: sellerAmount },
+      { lockingBytecode: creatorLockingBytecode, valueSatoshis: royalty },
+      { lockingBytecode: winnerLockingBytecode, valueSatoshis: 1000n, token },
+    ];
+
+    const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 1000n;
+    const change = totalInput - sellerAmount - royalty - 1000n - fee;
+    if (change > 546n) {
+      outputs.push({ lockingBytecode: winnerLockingBytecode, valueSatoshis: change });
+    }
+
+    const transaction = {
+      version: 2,
+      inputs: sourceOutputs.map((so) => ({
+        outpointIndex: so.outpointIndex,
+        outpointTransactionHash: so.outpointTransactionHash,
+        sequenceNumber: so.sequenceNumber,
+        unlockingBytecode: so.unlockingBytecode,
+      })),
+      outputs,
+      locktime: auction.endTime,
+    };
+
+    const contractUnlocker = contract.unlock.claim(finalBid);
+    const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
+      transaction,
+      sourceOutputs,
+      inputIndex: 0,
+    });
+    transaction.inputs[0].unlockingBytecode = contractUnlocking;
+
+    const transactionHex = binToHex(encodeTransaction(transaction));
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
+
+    return {
+      transactionHex,
+      transaction,
+      sourceOutputs,
+      sourceOutputsJson,
+      userPrompt: `Claim NFT: ${auction.metadata?.name || auction.tokenCategory.slice(0, 8)}`,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Failed to build claim transaction' };
   }
 }
 
@@ -675,5 +1387,21 @@ export async function mintNFT(
       success: false,
       error: error instanceof Error ? error.message : 'Failed to mint NFT',
     };
+  }
+}
+
+export function normalizeCommitment(commitment: string): string {
+  if (!commitment) return '';
+  if (isHexString(commitment)) return commitment.toLowerCase();
+  return utf8ToHex(commitment).toLowerCase();
+}
+
+export function decodeCommitmentToCid(commitment: string): string {
+  if (!commitment) return '';
+  if (!isHexString(commitment)) return commitment;
+  try {
+    return new TextDecoder().decode(hexToBytes(commitment));
+  } catch {
+    return commitment;
   }
 }

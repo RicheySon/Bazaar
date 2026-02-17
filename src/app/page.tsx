@@ -75,7 +75,7 @@ function ActivityItem({ type, item, price, time }: {
 }
 
 export default function HomePage() {
-  const { listings, auctions, isLoading, setLoading, setListings } = useNFTStore();
+  const { listings, auctions, isLoading, setLoading, setListings, setAuctions } = useNFTStore();
   const { bchUsd, fetchPrice } = usePriceStore();
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('24h');
 
@@ -94,11 +94,27 @@ export default function HomePage() {
           const apiListings: NFTListing[] = data.listings.map((l) => ({
             txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
             commitment: l.commitment, satoshis: 0, price: BigInt(l.price),
-            sellerAddress: l.seller, sellerPkh: '', creatorAddress: l.seller,
-            creatorPkh: '', royaltyBasisPoints: l.royaltyBasisPoints,
+            sellerAddress: l.seller, sellerPkh: l.sellerPkh || '', creatorAddress: l.creator || l.seller,
+            creatorPkh: l.creatorPkh || '', royaltyBasisPoints: l.royaltyBasisPoints,
             status: 'active' as const, listingType: 'fixed' as const,
+            metadata: l.metadata,
+          }));
+          const apiAuctions = data.auctions.map((a) => ({
+            txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
+            commitment: a.commitment, satoshis: 0, price: BigInt(a.currentBid || a.minBid),
+            sellerAddress: a.seller, sellerPkh: a.sellerPkh || '', creatorAddress: a.creator || a.seller,
+            creatorPkh: a.creatorPkh || '', royaltyBasisPoints: a.royaltyBasisPoints,
+            status: (a.status || 'active') as any, listingType: 'auction' as const,
+            minBid: BigInt(a.minBid || '0'),
+            currentBid: BigInt(a.currentBid || '0'),
+            currentBidder: a.currentBidder || '',
+            endTime: a.endTime || 0,
+            minBidIncrement: BigInt(a.minBidIncrement || '0'),
+            bidHistory: a.bidHistory || [],
+            metadata: a.metadata,
           }));
           setListings(apiListings);
+          setAuctions(apiAuctions);
         }
       } catch (err) {
         console.warn('Failed to load listings (API might be unavailable):', err);
@@ -109,7 +125,7 @@ export default function HomePage() {
     loadListings();
     const interval = setInterval(loadListings, 15000);
     return () => clearInterval(interval);
-  }, [setLoading, setListings]);
+  }, [setLoading, setListings, setAuctions]);
 
   const allItems = [...listings, ...auctions];
 

@@ -38,6 +38,7 @@ export interface AuctionListing extends NFTListing {
   currentBid: bigint;
   currentBidder: string;
   endTime: number; // Unix timestamp
+  minBidIncrement: bigint;
   bidHistory: AuctionBid[];
 }
 
@@ -78,6 +79,7 @@ export interface AuctionParams {
   minBid: bigint;
   durationHours: number;
   royaltyBasisPoints: number;
+  minBidIncrement: bigint;
   creatorPkh: string;
 }
 

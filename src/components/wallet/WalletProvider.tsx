@@ -7,7 +7,10 @@ import { useEffect, useRef, useState } from 'react';
 async function clearWalletConnectCache() {
     if (typeof window === 'undefined') return;
 
-    console.log('[WalletProvider] Clearing WalletConnect cache...');
+    const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
+    if (wcDebug) {
+        console.log('[WalletProvider] Clearing WalletConnect cache...');
+    }
 
     // Clear all WalletConnect related localStorage keys
     const keysToRemove: string[] = [];
@@ -31,13 +34,17 @@ async function clearWalletConnectCache() {
             const dbs = await window.indexedDB.databases();
             for (const db of dbs) {
                 if (db.name && (db.name.includes('walletconnect') || db.name.includes('wc@'))) {
-                    console.log(`[WalletProvider] Deleting IndexedDB: ${db.name}`);
+                    if (wcDebug) {
+                        console.log(`[WalletProvider] Deleting IndexedDB: ${db.name}`);
+                    }
                     window.indexedDB.deleteDatabase(db.name);
                 }
             }
         }
     } catch (e) {
-        console.error('[WalletProvider] Failed to clear IndexedDB:', e);
+        if (wcDebug) {
+            console.error('[WalletProvider] Failed to clear IndexedDB:', e);
+        }
     }
 }
 

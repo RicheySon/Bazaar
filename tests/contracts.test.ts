@@ -1,8 +1,6 @@
-import { mintNFT, createFixedListing, buyNFT } from '../src/lib/bch/contracts';
-import { Utxo } from 'cashscript';
+import { jest } from '@jest/globals';
 
-// Mock cashscript
-jest.mock('cashscript', () => {
+jest.unstable_mockModule('cashscript', () => {
     return {
         ElectrumNetworkProvider: jest.fn().mockImplementation(() => ({
             getUtxos: jest.fn().mockResolvedValue([
@@ -64,6 +62,17 @@ jest.mock('cashscript', () => {
     };
 });
 
+let mintNFT: typeof import('../src/lib/bch/contracts').mintNFT;
+let createFixedListing: typeof import('../src/lib/bch/contracts').createFixedListing;
+let buyNFT: typeof import('../src/lib/bch/contracts').buyNFT;
+
+beforeAll(async () => {
+    const contracts = await import('../src/lib/bch/contracts');
+    mintNFT = contracts.mintNFT;
+    createFixedListing = contracts.createFixedListing;
+    buyNFT = contracts.buyNFT;
+});
+
 describe('Contracts Logic', () => {
     const mockPk = new Uint8Array(32).fill(1);
     const mockPkh = '00'.repeat(20);
@@ -87,7 +96,7 @@ describe('Contracts Logic', () => {
         const result = await createFixedListing(
             mockPk,
             'mock_category',
-            { txid: 'tx1', vout: 0, satoshis: 1000n },
+            { txid: 'tx1', vout: 0, satoshis: 1000n, commitment: '' },
             5000n,
             mockPkh,
             1000n,

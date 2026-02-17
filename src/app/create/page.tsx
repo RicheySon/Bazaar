@@ -8,10 +8,12 @@ import {
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
-import { prepareMint } from '@/lib/bch/api-client';
+import { createListing } from '@/lib/bch/api-client';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
-import { mintNFT, buildWcMintParams } from '@/lib/bch/contracts';
-import { getExplorerTxUrl } from '@/lib/bch/config';
+import { mintNFT, buildWcMintParams, createFixedListing, createAuctionListing, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
+import { getExplorerTxUrl, MARKETPLACE_CONFIG } from '@/lib/bch/config';
+import { bchToSatoshis } from '@/lib/utils';
+import { decodeCashAddress } from '@bitauth/libauth';
 
 type ListingMode = 'fixed' | 'auction';
 type MediaType = 'image' | 'video';
@@ -20,6 +22,8 @@ export default function CreatePage() {
   const { wallet, setModalOpen, connectionType } = useWalletStore();
   const { signTransaction } = useWeb3ModalConnectorContext();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
+  const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -34,8 +38,19 @@ export default function CreatePage() {
   const [attributes, setAttributes] = useState<Array<{ trait_type: string; value: string }>>([]);
 
   const [step, setStep] = useState(0);
-  const [txid, setTxid] = useState('');
+  const [mintTxid, setMintTxid] = useState('');
+  const [listingTxid, setListingTxid] = useState('');
   const [error, setError] = useState('');
+
+  const waitForTokenUtxo = async (address: string, tokenCategory: string) => {
+    for (let i = 0; i < 24; i++) {
+      const tokenUtxos = await getTokenUtxos(address);
+      const utxo = tokenUtxos.find((u) => u.token?.category === tokenCategory);
+      if (utxo && utxo.token?.nft) return utxo;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    return null;
+  };
 
   const handleMediaSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -85,8 +100,13 @@ export default function CreatePage() {
 
     setError('');
     try {
+      if (!isPinataConfigured()) {
+        setError('Pinata API not configured. Add NEXT_PUBLIC_PINATA_JWT to .env.local to mint NFTs.');
+        return;
+      }
+
       setStep(1);
-      if (isPinataConfigured()) {
+      {
         const imageResult = await uploadFileToPinata(mediaFile);
         if (!imageResult.success || !imageResult.ipfsUri) {
           setError(imageResult.error || 'Upload failed');
@@ -125,17 +145,27 @@ export default function CreatePage() {
             return;
           }
 
-          console.log('[Create] Calling signTransaction from context...');
-          console.log('[Create] signTransaction available:', typeof signTransaction === 'function');
+          if (wcDebug) {
+            console.log('[Create] Calling signTransaction from context...');
+            console.log('[Create] signTransaction available:', typeof signTransaction === 'function');
+          }
 
           try {
-            // Use context's signTransaction directly (properly bound to connector)
-            // Pass transaction as hex string to bypass stringify() serialization issues
-            // Add 90s timeout so user doesn't wait forever
-            console.log('[Create] Sending signTransaction with hex string, length:', wcParams.transactionHex.length);
+            const wcRequest = wcPayloadMode === 'raw'
+              ? {
+                  transaction: wcParams.transaction,
+                  sourceOutputs: wcParams.sourceOutputs as any,
+                }
+              : {
+                  transaction: wcParams.transactionHex,
+                  sourceOutputs: wcParams.sourceOutputsJson as any,
+                };
+
+            if (wcDebug) {
+              console.log('[Create] Sending signTransaction with mode:', wcPayloadMode);
+            }
             const signPromise = signTransaction({
-              transaction: wcParams.transaction,
-              sourceOutputs: wcParams.sourceOutputs as any,
+              ...wcRequest,
               broadcast: true,
               userPrompt: wcParams.userPrompt,
             });
@@ -156,11 +186,13 @@ export default function CreatePage() {
               };
             }
           } catch (signError: unknown) {
-            console.error('[Create] signTransaction error:', signError);
-            console.error('[Create] signTransaction error type:', typeof signError);
-            if (signError && typeof signError === 'object') {
-              console.error('[Create] signTransaction error keys:', Object.keys(signError as object));
-              try { console.error('[Create] signTransaction error JSON:', JSON.stringify(signError)); } catch { }
+            if (wcDebug) {
+              console.error('[Create] signTransaction error:', signError);
+              console.error('[Create] signTransaction error type:', typeof signError);
+              if (signError && typeof signError === 'object') {
+                console.error('[Create] signTransaction error keys:', Object.keys(signError as object));
+                try { console.error('[Create] signTransaction error JSON:', JSON.stringify(signError)); } catch { }
+              }
             }
             const msg = signError instanceof Error
               ? signError.message
@@ -188,15 +220,178 @@ export default function CreatePage() {
 
         if (!mintResult.success) { setError(mintResult.error || 'Minting failed'); setStep(0); return; }
 
-        setTxid(mintResult.txid || '');
-        setStep(4);
-      } else {
-        await new Promise((r) => setTimeout(r, 2000));
-        setStep(2);
-        await new Promise((r) => setTimeout(r, 2000));
+        setMintTxid(mintResult.txid || '');
+
+        const tokenCategory = mintResult.tokenCategory || '';
+        const nftUtxo = await waitForTokenUtxo(wallet.address, tokenCategory);
+        if (!nftUtxo || !nftUtxo.token?.nft) {
+          setError('NFT not found in wallet yet. Please refresh and try listing again.');
+          setStep(0);
+          return;
+        }
+
         setStep(3);
-        await new Promise((r) => setTimeout(r, 1500));
-        setTxid('demo_tx_' + Date.now().toString(16));
+
+        const royaltyBp = royaltyPercent * 100;
+        const commitment = nftUtxo.token.nft.commitment || '';
+        const endTime = Math.floor(Date.now() / 1000) + parseInt(auctionHours, 10) * 3600;
+        const priceSats = listingMode === 'fixed' ? bchToSatoshis(parseFloat(price)) : 0n;
+        const minBidSats = listingMode === 'auction' ? bchToSatoshis(parseFloat(minBid)) : 0n;
+
+        let listingResult: { success: boolean; txid?: string; error?: string; contractAddress?: string };
+        let sellerPkh = '';
+        let creatorPkh = '';
+
+        if (connectionType === 'walletconnect') {
+          const decoded = decodeCashAddress(wallet.address);
+          if (typeof decoded === 'string') {
+            setError('Invalid wallet address');
+            setStep(0);
+            return;
+          }
+          sellerPkh = Buffer.from(decoded.payload).toString('hex');
+          creatorPkh = sellerPkh;
+
+          const listingParams = await buildWcListingParams({
+            address: wallet.address,
+            tokenCategory,
+            listingType: listingMode,
+            price: listingMode === 'fixed' ? priceSats : undefined,
+            minBid: listingMode === 'auction' ? minBidSats : undefined,
+            endTime: listingMode === 'auction' ? BigInt(endTime) : undefined,
+            royaltyBasisPoints: BigInt(royaltyBp),
+            sellerPkh,
+            creatorPkh,
+            minBidIncrement: BigInt(MARKETPLACE_CONFIG.minBidIncrement),
+          });
+
+          if ('error' in listingParams) {
+            setError(listingParams.error);
+            setStep(0);
+            return;
+          }
+
+          try {
+            const wcRequest = wcPayloadMode === 'raw'
+              ? {
+                  transaction: listingParams.transaction,
+                  sourceOutputs: listingParams.sourceOutputs as any,
+                }
+              : {
+                  transaction: listingParams.transactionHex,
+                  sourceOutputs: listingParams.sourceOutputsJson as any,
+                };
+
+            const signResult = await signTransaction({
+              ...wcRequest,
+              broadcast: true,
+              userPrompt: listingParams.userPrompt,
+            });
+
+            if (!signResult) {
+              listingResult = { success: false, error: 'Listing transaction rejected by wallet' };
+            } else {
+              listingResult = {
+                success: true,
+                txid: signResult.signedTransactionHash,
+                contractAddress: listingParams.contractAddress,
+              };
+            }
+          } catch (signError: unknown) {
+            const msg = signError instanceof Error
+              ? signError.message
+              : 'Wallet did not respond to listing request.';
+            listingResult = { success: false, error: msg };
+          }
+        } else {
+          const walletData = loadWallet();
+          if (!walletData) { setError('Wallet not found. Please reconnect.'); setStep(0); return; }
+
+          sellerPkh = getPkhHex(walletData);
+          creatorPkh = sellerPkh;
+
+          if (listingMode === 'fixed') {
+            listingResult = await createFixedListing(
+              walletData.privateKey,
+              tokenCategory,
+              {
+                txid: nftUtxo.txid,
+                vout: nftUtxo.vout,
+                satoshis: nftUtxo.satoshis,
+                commitment,
+                capability: nftUtxo.token.nft.capability,
+              },
+              priceSats,
+              creatorPkh,
+              BigInt(royaltyBp),
+              sellerPkh
+            );
+          } else {
+            listingResult = await createAuctionListing(
+              walletData.privateKey,
+              tokenCategory,
+              {
+                txid: nftUtxo.txid,
+                vout: nftUtxo.vout,
+                satoshis: nftUtxo.satoshis,
+                commitment,
+                capability: nftUtxo.token.nft.capability,
+              },
+              minBidSats,
+              BigInt(endTime),
+              creatorPkh,
+              BigInt(royaltyBp),
+              BigInt(MARKETPLACE_CONFIG.minBidIncrement),
+              sellerPkh
+            );
+          }
+        }
+
+        if (!sellerPkh || !creatorPkh) {
+          setError('Failed to resolve seller/creator PKH');
+          setStep(0);
+          return;
+        }
+
+        if (!listingResult.success) {
+          setError(listingResult.error || 'Listing failed');
+          setStep(0);
+          return;
+        }
+
+        const contractAddress = listingResult.contractAddress
+          || (listingMode === 'fixed'
+            ? buildMarketplaceContract(
+                sellerPkh,
+                priceSats,
+                creatorPkh,
+                BigInt(royaltyBp)
+              ).address
+            : buildAuctionContract(
+                sellerPkh,
+                minBidSats,
+                BigInt(endTime),
+                creatorPkh,
+                BigInt(royaltyBp),
+                BigInt(MARKETPLACE_CONFIG.minBidIncrement)
+              ).address);
+
+        await createListing({
+          txid: listingResult.txid || '',
+          contractAddress,
+          sellerAddress: wallet.address,
+          creatorAddress: wallet.address,
+          tokenCategory,
+          commitment,
+          price: listingMode === 'fixed' ? priceSats.toString() : undefined,
+          minBid: listingMode === 'auction' ? minBidSats.toString() : undefined,
+          endTime: listingMode === 'auction' ? endTime : undefined,
+          minBidIncrement: listingMode === 'auction' ? MARKETPLACE_CONFIG.minBidIncrement.toString() : undefined,
+          royaltyBasisPoints: royaltyBp,
+          listingType: listingMode,
+        });
+
+        setListingTxid(listingResult.txid || '');
         setStep(4);
       }
     } catch (err: unknown) {
@@ -257,20 +452,22 @@ export default function CreatePage() {
                 <p className="text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
                   Your CashTokens NFT has been minted on Bitcoin Cash Chipnet
                 </p>
-                {txid && (
+                {(mintTxid || listingTxid) && (
                   <div className="p-3 rounded-lg mb-6" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-                    <div className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Transaction ID</div>
-                    <div className="text-xs font-mono break-all" style={{ color: 'var(--accent)' }}>{txid}</div>
+                    <div className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Mint TX</div>
+                    <div className="text-xs font-mono break-all mb-2" style={{ color: 'var(--accent)' }}>{mintTxid || '—'}</div>
+                    <div className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Listing TX</div>
+                    <div className="text-xs font-mono break-all" style={{ color: 'var(--accent)' }}>{listingTxid || '—'}</div>
                   </div>
                 )}
                 <div className="flex gap-3">
-                  {txid && !txid.startsWith('demo') && (
-                    <a href={getExplorerTxUrl(txid)} target="_blank" rel="noopener noreferrer"
+                  {listingTxid && (
+                    <a href={getExplorerTxUrl(listingTxid)} target="_blank" rel="noopener noreferrer"
                       className="btn-secondary flex-1 flex items-center justify-center gap-2 text-xs">
                       <ExternalLink className="h-3.5 w-3.5" /> View on Explorer
                     </a>
                   )}
-                  <button onClick={() => { setStep(0); setName(''); setDescription(''); removeMedia(); setPrice(''); setMinBid(''); setAttributes([]); }}
+                  <button onClick={() => { setStep(0); setName(''); setDescription(''); removeMedia(); setPrice(''); setMinBid(''); setAttributes([]); setMintTxid(''); setListingTxid(''); }}
                     className="btn-primary flex-1 text-xs">Create Another</button>
                 </div>
               </>
@@ -298,7 +495,7 @@ export default function CreatePage() {
             <div>
               <div className="text-xs font-medium" style={{ color: 'var(--accent-orange)' }}>Pinata API not configured</div>
               <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                Add NEXT_PUBLIC_PINATA_JWT to .env.local for IPFS. Running in demo mode.
+                Add NEXT_PUBLIC_PINATA_JWT to .env.local to enable IPFS uploads.
               </div>
             </div>
           </div>

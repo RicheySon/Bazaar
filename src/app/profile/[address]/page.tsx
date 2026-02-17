@@ -10,7 +10,7 @@ import {
 import { NFTGrid } from '@/components/nft/NFTGrid';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { formatBCH, shortenAddress } from '@/lib/utils';
-import { fetchWalletData } from '@/lib/bch/api-client';
+import { fetchWalletData, fetchMarketplaceListings } from '@/lib/bch/api-client';
 import { getExplorerAddressUrl, CHIPNET_CONFIG } from '@/lib/bch/config';
 import type { NFTListing } from '@/lib/types';
 
@@ -24,6 +24,8 @@ export default function ProfilePage() {
 
   const [balance, setBalance] = useState<bigint>(0n);
   const [nfts, setNfts] = useState<NFTListing[]>([]);
+  const [listedNfts, setListedNfts] = useState<NFTListing[]>([]);
+  const [auctionNfts, setAuctionNfts] = useState<NFTListing[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<ProfileTab>('owned');
   const [copied, setCopied] = useState(false);
@@ -43,6 +45,40 @@ export default function ProfilePage() {
           status: 'active' as const, listingType: 'fixed' as const,
         }));
         setNfts(userNfts);
+      }
+
+      const marketplace = await fetchMarketplaceListings();
+      if (marketplace) {
+        const listed = marketplace.listings
+          .filter((l) => l.seller === address)
+          .map((l) => ({
+            txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
+            commitment: l.commitment, satoshis: 0, price: BigInt(l.price),
+            sellerAddress: l.seller, sellerPkh: l.sellerPkh || '',
+            creatorAddress: l.creator || l.seller, creatorPkh: l.creatorPkh || '',
+            royaltyBasisPoints: l.royaltyBasisPoints, status: 'active' as const,
+            listingType: 'fixed' as const, metadata: l.metadata,
+          }));
+        const auctions = marketplace.auctions
+          .filter((a) => a.seller === address)
+          .map((a) => ({
+            txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
+            commitment: a.commitment || '', satoshis: 0,
+            price: BigInt(a.currentBid || a.minBid || '0'),
+            sellerAddress: a.seller, sellerPkh: a.sellerPkh || '',
+            creatorAddress: a.creator || a.seller, creatorPkh: a.creatorPkh || '',
+            royaltyBasisPoints: a.royaltyBasisPoints, status: (a.status || 'active') as any,
+            listingType: 'auction' as const,
+            minBid: BigInt(a.minBid || '0'),
+            currentBid: BigInt(a.currentBid || '0'),
+            currentBidder: a.currentBidder || '',
+            endTime: a.endTime || 0,
+            minBidIncrement: BigInt(a.minBidIncrement || '0'),
+            bidHistory: a.bidHistory || [],
+            metadata: a.metadata,
+          }));
+        setListedNfts(listed);
+        setAuctionNfts(auctions);
       }
     } catch (err) {
       console.error('Failed to load profile:', err);
@@ -67,17 +103,15 @@ export default function ProfilePage() {
 
   const tabs: { id: ProfileTab; label: string; icon: typeof ImageIcon; count: number }[] = [
     { id: 'owned', label: 'Owned', icon: ImageIcon, count: nfts.length },
-    { id: 'listed', label: 'Listed', icon: Tag, count: 0 },
-    { id: 'auctions', label: 'Auctions', icon: Gavel, count: 0 },
+    { id: 'listed', label: 'Listed', icon: Tag, count: listedNfts.length },
+    { id: 'auctions', label: 'Auctions', icon: Gavel, count: auctionNfts.length },
   ];
 
-  const filteredNfts = nfts.filter((nft) => {
-    switch (activeTab) {
-      case 'listed': return nft.status === 'active' && nft.price > 0n;
-      case 'auctions': return nft.listingType === 'auction';
-      default: return true;
-    }
-  });
+  const filteredNfts = activeTab === 'owned'
+    ? nfts
+    : activeTab === 'listed'
+      ? listedNfts
+      : auctionNfts;
 
   return (
     <div className="px-4 sm:px-6 py-6">
