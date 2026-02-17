@@ -63,7 +63,7 @@ export default function ActivityPage() {
           }));
           const apiAuctions = data.auctions.map((a) => ({
             txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
-            commitment: a.commitment, satoshis: 0, price: BigInt(a.currentBid || a.minBid),
+            commitment: a.commitment || '', satoshis: 0, price: BigInt(a.currentBid || a.minBid),
             sellerAddress: a.seller, sellerPkh: a.sellerPkh || '', creatorAddress: a.creator || a.seller,
             creatorPkh: a.creatorPkh || '', royaltyBasisPoints: a.royaltyBasisPoints,
             status: (a.status || 'active') as any, listingType: 'auction' as const,
