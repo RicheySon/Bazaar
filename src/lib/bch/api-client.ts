@@ -46,6 +46,7 @@ export interface MarketplaceResponse {
     sellerPkh?: string;
     creator?: string;
     creatorPkh?: string;
+    royaltyBasisPoints: number;
     status?: string;
     commitment?: string;
     currentBidder?: string;
