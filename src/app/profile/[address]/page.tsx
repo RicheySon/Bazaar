@@ -53,7 +53,7 @@ export default function ProfilePage() {
           .filter((l) => l.seller === address)
           .map((l) => ({
             txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
-            commitment: l.commitment, satoshis: 0, price: BigInt(l.price),
+          commitment: l.commitment || '', satoshis: 0, price: BigInt(l.price),
             sellerAddress: l.seller, sellerPkh: l.sellerPkh || '',
             creatorAddress: l.creator || l.seller, creatorPkh: l.creatorPkh || '',
             royaltyBasisPoints: l.royaltyBasisPoints, status: 'active' as const,

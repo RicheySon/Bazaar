@@ -93,7 +93,7 @@ export default function HomePage() {
         if (data) {
           const apiListings: NFTListing[] = data.listings.map((l) => ({
             txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
-            commitment: l.commitment, satoshis: 0, price: BigInt(l.price),
+            commitment: l.commitment || '', satoshis: 0, price: BigInt(l.price),
             sellerAddress: l.seller, sellerPkh: l.sellerPkh || '', creatorAddress: l.creator || l.seller,
             creatorPkh: l.creatorPkh || '', royaltyBasisPoints: l.royaltyBasisPoints,
             status: 'active' as const, listingType: 'fixed' as const,
@@ -101,7 +101,7 @@ export default function HomePage() {
           }));
           const apiAuctions = data.auctions.map((a) => ({
             txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
-            commitment: a.commitment, satoshis: 0, price: BigInt(a.currentBid || a.minBid),
+            commitment: a.commitment || '', satoshis: 0, price: BigInt(a.currentBid || a.minBid),
             sellerAddress: a.seller, sellerPkh: a.sellerPkh || '', creatorAddress: a.creator || a.seller,
             creatorPkh: a.creatorPkh || '', royaltyBasisPoints: a.royaltyBasisPoints,
             status: (a.status || 'active') as any, listingType: 'auction' as const,
