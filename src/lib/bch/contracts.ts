@@ -1018,7 +1018,7 @@ export async function buildWcBuyParams(params: {
       sourceOutputs,
       inputIndex: 0,
     });
-    transaction.inputs[0].unlockingBytecode = contractUnlocking;
+    transaction.inputs[0].unlockingBytecode = new Uint8Array(contractUnlocking);
 
     const transactionHex = binToHex(encodeTransaction(transaction));
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
@@ -1163,7 +1163,7 @@ export async function buildWcBidParams(params: {
       sourceOutputs,
       inputIndex: 0,
     });
-    transaction.inputs[0].unlockingBytecode = contractUnlocking;
+    transaction.inputs[0].unlockingBytecode = new Uint8Array(contractUnlocking);
 
     const transactionHex = binToHex(encodeTransaction(transaction));
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
@@ -1306,7 +1306,7 @@ export async function buildWcClaimParams(params: {
       sourceOutputs,
       inputIndex: 0,
     });
-    transaction.inputs[0].unlockingBytecode = contractUnlocking;
+    transaction.inputs[0].unlockingBytecode = new Uint8Array(contractUnlocking);
 
     const transactionHex = binToHex(encodeTransaction(transaction));
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
