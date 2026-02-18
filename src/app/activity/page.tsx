@@ -145,7 +145,7 @@ export default function ActivityPage() {
 
   useEffect(() => {
     loadActivity();
-    const interval = setInterval(loadActivity, 15000);
+    const interval = setInterval(loadActivity, 60000);
     return () => clearInterval(interval);
   }, [loadActivity]);
 

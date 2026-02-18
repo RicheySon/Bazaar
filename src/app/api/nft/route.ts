@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ElectrumNetworkProvider } from 'cashscript';
+import { getElectrumProvider } from '@/lib/bch/electrum';
 import { decodeCashAddress, encodeTransaction, binToHex } from '@bitauth/libauth';
 
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
-
-function getProvider(): ElectrumNetworkProvider {
-  return new ElectrumNetworkProvider(NETWORK);
-}
 
 // GET /api/nft?address=bchtest:...
 // Returns all NFT token UTXOs for an address
@@ -18,7 +14,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const electrum = getProvider();
+    const electrum = getElectrumProvider(NETWORK);
     const utxos = await electrum.getUtxos(address);
 
     const nfts = utxos
@@ -55,7 +51,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const electrum = getProvider();
+    const electrum = getElectrumProvider(NETWORK);
     const utxos = await electrum.getUtxos(address);
 
     if (utxos.length === 0) {

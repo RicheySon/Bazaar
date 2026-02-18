@@ -11,7 +11,7 @@ import {
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, timeRemaining, ipfsToHttp } from '@/lib/utils';
-import { fetchMarketplaceListingById, recordMarketplaceBid, updateMarketplaceListingStatus } from '@/lib/bch/api-client';
+import { fetchMarketplaceListingById } from '@/lib/bch/api-client';
 import { placeBid, claimAuction, cancelListing, buildWcBidParams, buildWcClaimParams } from '@/lib/bch/contracts';
 import { loadWallet } from '@/lib/bch/wallet';
 import type { AuctionListing } from '@/lib/types';
@@ -61,7 +61,12 @@ export default function AuctionPage() {
             currentBidder: data.currentBidder || '',
             endTime: data.endTime || 0,
             minBidIncrement: BigInt(data.minBidIncrement || '0'),
-            bidHistory: data.bidHistory || [],
+            bidHistory: (data.bidHistory || []).map((b: any) => ({
+              bidder: b.bidder || '',
+              amount: BigInt(b.amount || '0'),
+              txid: b.txid || '',
+              timestamp: b.timestamp || Date.now(),
+            })),
             metadata: data.metadata,
           };
           setAuction(mapped);
@@ -141,7 +146,6 @@ export default function AuctionPage() {
         });
         if (!signResult) throw new Error('Bid transaction was rejected by wallet.');
 
-        await recordMarketplaceBid(id, wallet.address, bidSats.toString(), signResult.signedTransactionHash || '');
         setAuction((prev) => prev ? ({
           ...prev,
           currentBid: bidSats,
@@ -159,7 +163,6 @@ export default function AuctionPage() {
         const result = await placeBid(walletData.privateKey, auction, bidSats, walletData.address);
         if (!result.success) throw new Error(result.error || 'Bid failed');
 
-        await recordMarketplaceBid(id, walletData.address, bidSats.toString(), result.txid || '');
         setAuction((prev) => prev ? ({
           ...prev,
           currentBid: bidSats,
@@ -211,7 +214,6 @@ export default function AuctionPage() {
         });
         if (!signResult) throw new Error('Claim transaction was rejected by wallet.');
 
-        await updateMarketplaceListingStatus(id, 'sold');
         setAuction((prev) => prev ? { ...prev, status: 'sold' } : prev);
       } else {
         const walletData = loadWallet();
@@ -219,7 +221,6 @@ export default function AuctionPage() {
 
         const result = await claimAuction(walletData.privateKey, auction, walletData.address);
         if (!result.success) throw new Error(result.error || 'Claim failed');
-        await updateMarketplaceListingStatus(id, 'sold');
         setAuction((prev) => prev ? { ...prev, status: 'sold' } : prev);
       }
     } catch (err) {
@@ -246,7 +247,6 @@ export default function AuctionPage() {
 
       const result = await cancelListing(walletData.privateKey, auction);
       if (!result.success) throw new Error(result.error || 'Reclaim failed');
-      await updateMarketplaceListingStatus(id, 'cancelled');
       setAuction((prev) => prev ? { ...prev, status: 'cancelled' } : prev);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Reclaim failed');

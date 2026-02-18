@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import {
   TrendingUp, ArrowUpRight, ArrowDownRight, Activity,
   ChevronRight, Zap, Shield, BarChart3
@@ -9,7 +10,7 @@ import {
 import { useNFTStore } from '@/lib/store/nft-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { fetchMarketplaceListings } from '@/lib/bch/api-client';
-import { formatBCH, formatUSD, shortenAddress } from '@/lib/utils';
+import { formatBCH, formatUSD, shortenAddress, ipfsToHttp } from '@/lib/utils';
 import type { NFTListing } from '@/lib/types';
 
 const timeFilters = ['1h', '6h', '24h', '7d', '30d'] as const;
@@ -123,7 +124,7 @@ export default function HomePage() {
       }
     };
     loadListings();
-    const interval = setInterval(loadListings, 15000);
+    const interval = setInterval(loadListings, 30000);
     return () => clearInterval(interval);
   }, [setLoading, setListings, setAuctions]);
 
@@ -262,9 +263,22 @@ export default function HomePage() {
                           <td>
                             <Link href={isAuction ? `/auction/${item.txid}` : `/nft/${item.txid}`}
                               className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold shrink-0"
-                                style={{ background: 'var(--bg-hover)', color: 'var(--accent)' }}>
-                                {item.tokenCategory?.slice(0, 2)?.toUpperCase() || 'NK'}
+                              <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0"
+                                style={{ background: 'var(--bg-hover)' }}>
+                                {item.metadata?.image ? (
+                                  <Image
+                                    src={ipfsToHttp(item.metadata.image)}
+                                    alt={item.metadata?.name || 'NFT'}
+                                    width={40}
+                                    height={40}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-xs font-bold"
+                                    style={{ color: 'var(--accent)' }}>
+                                    {item.tokenCategory?.slice(0, 2)?.toUpperCase() || 'NK'}
+                                  </div>
+                                )}
                               </div>
                               <div>
                                 <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>

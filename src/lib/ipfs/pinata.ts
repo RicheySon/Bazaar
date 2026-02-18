@@ -1,8 +1,9 @@
 // Pinata IPFS Client for NFT metadata storage
 
-const PINATA_JWT = process.env.NEXT_PUBLIC_PINATA_JWT || '';
+const PINATA_JWT = process.env.PINATA_JWT || '';
 const PINATA_GATEWAY = process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud';
 const PINATA_API = 'https://api.pinata.cloud';
+const IS_BROWSER = typeof window !== 'undefined';
 
 export interface PinataUploadResult {
   success: boolean;
@@ -14,7 +15,28 @@ export interface PinataUploadResult {
 
 // Upload a file (image/video) to IPFS via Pinata
 export async function uploadFileToPinata(file: File): Promise<PinataUploadResult> {
+  if (IS_BROWSER) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch('/api/ipfs/upload', { method: 'POST', body: formData });
+      if (!response.ok) {
+        const error = await response.text();
+        return { success: false, error: error || 'Pinata upload failed' };
+      }
+      return await response.json();
+    } catch (error) {
+      return {
+        success: false,
+        error: `Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
+  }
+
   try {
+    if (!PINATA_JWT) {
+      return { success: false, error: 'Pinata JWT is not configured on the server.' };
+    }
     const formData = new FormData();
     formData.append('file', file);
 
@@ -71,7 +93,30 @@ export async function uploadMetadataToPinata(metadata: {
   royalty: number;
   attributes?: Array<{ trait_type: string; value: string }>;
 }): Promise<PinataUploadResult> {
+  if (IS_BROWSER) {
+    try {
+      const response = await fetch('/api/ipfs/metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata),
+      });
+      if (!response.ok) {
+        const error = await response.text();
+        return { success: false, error: error || 'Metadata upload failed' };
+      }
+      return await response.json();
+    } catch (error) {
+      return {
+        success: false,
+        error: `Metadata upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
+  }
+
   try {
+    if (!PINATA_JWT) {
+      return { success: false, error: 'Pinata JWT is not configured on the server.' };
+    }
     const response = await fetch(`${PINATA_API}/pinning/pinJSONToIPFS`, {
       method: 'POST',
       headers: {
@@ -143,5 +188,8 @@ export function ipfsToGatewayUrl(ipfsUri: string): string {
 
 // Check if Pinata is configured
 export function isPinataConfigured(): boolean {
+  if (IS_BROWSER) {
+    return true;
+  }
   return PINATA_JWT !== '' && PINATA_JWT !== 'your_pinata_jwt_here';
 }

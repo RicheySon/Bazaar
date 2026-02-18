@@ -1,5 +1,5 @@
 // BCH Chipnet NFT Indexer
-// Uses API-backed registry listings and Electrum for wallet NFTs
+// Uses API-backed chain indexer for listings and Electrum for wallet NFTs
 
 import { getProvider, getUtxos, getTokenUtxos } from './contracts';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
@@ -10,7 +10,7 @@ import { fetchMarketplaceListings, fetchMarketplaceListingById } from '@/lib/bch
 // Cache for fetched metadata
 const metadataCache = new Map<string, NFTMetadata>();
 
-// Fetch all active marketplace listings (from registry-backed API)
+// Fetch all active marketplace listings (from chain indexer API)
 export async function fetchListings(): Promise<NFTListing[]> {
   try {
     const data = await fetchMarketplaceListings();
@@ -37,7 +37,7 @@ export async function fetchListings(): Promise<NFTListing[]> {
   }
 }
 
-// Fetch active auctions (from registry-backed API)
+// Fetch active auctions (from chain indexer API)
 export async function fetchAuctions(): Promise<AuctionListing[]> {
   try {
     const data = await fetchMarketplaceListings();
@@ -146,7 +146,7 @@ async function fetchNFTMetadata(commitment: string): Promise<NFTMetadata | null>
   return null;
 }
 
-// Fetch a single listing by transaction ID (registry-backed)
+// Fetch a single listing by transaction ID (chain indexer)
 export async function fetchListingByTxid(txid: string): Promise<NFTListing | null> {
   try {
     const data = await fetchMarketplaceListingById(txid);
@@ -173,7 +173,7 @@ export async function fetchListingByTxid(txid: string): Promise<NFTListing | nul
   }
 }
 
-// Fetch auction by ID (registry-backed)
+// Fetch auction by ID (chain indexer)
 export async function fetchAuctionById(auctionId: string): Promise<AuctionListing | null> {
   try {
     const data = await fetchMarketplaceListingById(auctionId);

@@ -3,14 +3,19 @@
 
 import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact } from 'cashscript';
 import { decodeCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode } from '@bitauth/libauth';
+import { encodeNullDataScript, Op } from '@cashscript/utils';
 import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
 import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
 import { hexToBytes, isHexString, utf8ToHex } from '@/lib/utils';
+import { buildListingEventHex, buildBidEventHex, buildStatusEventHex } from '@/lib/bch/listing-events';
+import { getListingIndexAddress } from '@/lib/bch/config';
+import { getElectrumProvider } from '@/lib/bch/electrum';
 
 const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
+const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
 const wcLog = (...args: unknown[]) => {
   if (wcDebug) {
     console.log(...args);
@@ -23,6 +28,14 @@ function getLockingBytecode(address: string): Uint8Array {
     throw new Error('Invalid address: ' + decoded);
   }
   return decoded.bytecode;
+}
+
+function getPkhHexFromAddress(address: string): string {
+  const decoded = decodeCashAddress(address);
+  if (typeof decoded === 'string') {
+    throw new Error('Invalid address: ' + decoded);
+  }
+  return Buffer.from(decoded.payload).toString('hex');
 }
 
 function buildSourceOutputsJson(sourceOutputs: any[]) {
@@ -59,7 +72,7 @@ let provider: ElectrumNetworkProvider | null = null;
 
 export function getProvider(): ElectrumNetworkProvider {
   if (!provider) {
-    provider = new ElectrumNetworkProvider('chipnet');
+    provider = getElectrumProvider(NETWORK);
   }
   return provider;
 }
@@ -230,7 +243,7 @@ export async function createFixedListing(
     // Filter out the NFT UTXO itself to avoid double usage error
     const feeUtxos = selectUtxos(
       fundingUtxos.filter(u => u.txid !== tokenUtxo.txid),
-      2000n
+      3000n
     );
 
     // 5. Construct Transaction
@@ -244,6 +257,26 @@ export async function createFixedListing(
           nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
         }
       } as any);
+
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+
+    const eventHex = buildListingEventHex({
+      listingType: 'fixed',
+      sellerPkh,
+      creatorPkh,
+      royaltyBasisPoints: Number(royaltyBasisPoints),
+      price,
+      minBid: 0n,
+      endTime: 0,
+      minBidIncrement: 0n,
+      tokenCategory,
+    });
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     const txDetails = await tx.send();
 
@@ -299,7 +332,7 @@ export async function createAuctionListing(
     const fundingUtxos = await getUtxos(userContract.address);
     const feeUtxos = selectUtxos(
       fundingUtxos.filter(u => u.txid !== tokenUtxo.txid),
-      2000n
+      3000n
     );
 
     const tx = userContract.functions.spend(sellerPk, signatureTemplate)
@@ -312,6 +345,26 @@ export async function createAuctionListing(
           nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
         }
       } as any);
+
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+
+    const eventHex = buildListingEventHex({
+      listingType: 'auction',
+      sellerPkh,
+      creatorPkh,
+      royaltyBasisPoints: Number(royaltyBasisPoints),
+      price: 0n,
+      minBid,
+      endTime: Number(endTime),
+      minBidIncrement,
+      tokenCategory,
+    });
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     const txDetails = await tx.send();
 
@@ -336,6 +389,11 @@ export async function buyNFT(
   try {
     if (listing.listingType !== 'fixed') throw new Error('Not a fixed price listing');
 
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+
     const contract = buildMarketplaceContract(
       listing.sellerPkh,
       listing.price,
@@ -356,7 +414,7 @@ export async function buyNFT(
     // Amount needed: Price + Fee (approx 1000)
     // Actually, contract expects to receive Price. Fee is extra.
     // Total needed from buyer = Price + Fee.
-    const needed = listing.price + 2000n;
+    const needed = listing.price + 3000n;
     const fundingUtxos = selectUtxos(buyerUtxos, needed);
     const buyerTemplate = new SignatureTemplate(buyerPrivateKey);
 
@@ -380,6 +438,16 @@ export async function buyNFT(
     // Output 2: NFT to Buyer
     tx.to(buyerAddress, 1000n, { token: { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } } as any);
 
+    const buyerPkh = getPkhHexFromAddress(buyerAddress);
+    const eventHex = buildStatusEventHex({
+      listingTxid: listing.txid,
+      status: 'sold',
+      actorPkh: buyerPkh,
+    });
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+
     const txDetails = await tx.send();
 
     return {
@@ -400,6 +468,11 @@ export async function cancelListing(
   listing: NFTListing
 ): Promise<TransactionResult> {
   try {
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+
     let contract: Contract;
 
     if (listing.listingType === 'fixed') {
@@ -443,12 +516,22 @@ export async function cancelListing(
     const sellerUtxos = await getUtxos(listing.sellerAddress);
     const feeUtxos = selectUtxos(
       sellerUtxos.filter(u => u.txid !== nftUtxo.txid),
-      2000n
+      3000n
     );
 
     tx.from(nftUtxo)
       .fromP2PKH(feeUtxos, signatureTemplate)
       .to(listing.sellerAddress, 1000n, { token: { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } } as any);
+
+    const sellerPkh = getPkhHexFromAddress(listing.sellerAddress);
+    const eventHex = buildStatusEventHex({
+      listingTxid: listing.txid,
+      status: 'cancelled',
+      actorPkh: sellerPkh,
+    });
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     return {
       success: true,
@@ -470,6 +553,11 @@ export async function placeBid(
   bidderAddress: string // Added argument
 ): Promise<TransactionResult> {
   try {
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+
     const contract = buildAuctionContract(
       auction.sellerPkh,
       auction.minBid,
@@ -493,7 +581,7 @@ export async function placeBid(
 
     const bidderUtxos = await getUtxos(bidderAddress);
     // Needed: bidAmount + Fee (2000n for safety)
-    const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 2000n);
+    const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 3000n);
     const bidderTemplate = new SignatureTemplate(bidderPrivateKey);
 
     const tx = contract.functions.bid(currentBid, prevBidderPkh)
@@ -505,6 +593,16 @@ export async function placeBid(
     if (currentBid > 0) {
       tx.to(prevBidder, currentBid);
     }
+
+    const bidderPkh = getPkhHexFromAddress(bidderAddress);
+    const eventHex = buildBidEventHex({
+      listingTxid: auction.txid,
+      bidderPkh,
+      bidAmount,
+    });
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     // Change automatically handled
 
@@ -529,6 +627,11 @@ export async function claimAuction(
   winnerAddress: string // Added argument
 ): Promise<TransactionResult> {
   try {
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+
     const contract = buildAuctionContract(
       auction.sellerPkh,
       auction.minBid,
@@ -545,7 +648,7 @@ export async function claimAuction(
     const finalBid = auction.currentBid;
 
     const winnerUtxos = await getUtxos(winnerAddress);
-    const feeUtxos = selectUtxos(winnerUtxos, 2000n);
+    const feeUtxos = selectUtxos(winnerUtxos, 3000n);
     const winnerTemplate = new SignatureTemplate(winnerPrivateKey);
 
     const tx = contract.functions.claim(finalBid)
@@ -561,6 +664,16 @@ export async function claimAuction(
 
     // Send NFT to winner (currentBidder)
     tx.to(auction.currentBidder, 1000n, { token: { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } } as any);
+
+    const winnerPkh = getPkhHexFromAddress(winnerAddress);
+    const eventHex = buildStatusEventHex({
+      listingTxid: auction.txid,
+      status: 'claimed',
+      actorPkh: winnerPkh,
+    });
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     const txDetails = await tx.send();
 
@@ -768,9 +881,14 @@ export async function buildWcListingParams(params: {
       return { error: 'NFT not found in wallet' };
     }
 
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      return { error: 'Listing index address not configured.' };
+    }
+
     const feeUtxos = selectUtxos(
       utxos.filter((u) => !u.token && u.txid !== nftUtxo.txid),
-      2000n
+      3000n
     );
 
     const decoded = decodeCashAddress(params.address);
@@ -824,15 +942,42 @@ export async function buildWcListingParams(params: {
     });
 
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
-    const fee = 1000n;
+    const fee = 2000n;
     const nftDust = 1000n;
-    const change = totalInput - nftDust - fee;
+    const indexDust = 546n;
+    const change = totalInput - nftDust - indexDust - fee;
+    if (change < 0n) {
+      return { error: 'Insufficient funds for listing fees.' };
+    }
 
     const contractDecoded = cashAddressToLockingBytecode(contract.address);
     if (typeof contractDecoded === 'string') {
       return { error: 'Invalid contract address: ' + contractDecoded };
     }
     const contractLockingBytecode = contractDecoded.bytecode;
+
+    const indexDecoded = cashAddressToLockingBytecode(indexAddress);
+    if (typeof indexDecoded === 'string') {
+      return { error: 'Invalid index address: ' + indexDecoded };
+    }
+    const indexLockingBytecode = indexDecoded.bytecode;
+
+    const eventHex = buildListingEventHex({
+      listingType: params.listingType,
+      sellerPkh: params.sellerPkh,
+      creatorPkh: params.creatorPkh,
+      royaltyBasisPoints: Number(params.royaltyBasisPoints),
+      price: params.listingType === 'fixed' ? params.price || 0n : 0n,
+      minBid: params.listingType === 'auction' ? params.minBid || 0n : 0n,
+      endTime: params.listingType === 'auction' ? Number(params.endTime || 0n) : 0,
+      minBidIncrement:
+        params.listingType === 'auction' ? params.minBidIncrement || 0n : 0n,
+      tokenCategory: params.tokenCategory,
+    });
+    const opReturnLockingBytecode = encodeNullDataScript([
+      Op.OP_RETURN,
+      hexToBytes(eventHex),
+    ]);
 
     const txOutputs: Array<{
       lockingBytecode: Uint8Array;
@@ -854,6 +999,14 @@ export async function buildWcListingParams(params: {
             commitment: commitmentBytes,
           },
         },
+      },
+      {
+        lockingBytecode: indexLockingBytecode,
+        valueSatoshis: indexDust,
+      },
+      {
+        lockingBytecode: opReturnLockingBytecode,
+        valueSatoshis: 0n,
       },
     ];
 
@@ -944,8 +1097,13 @@ export async function buildWcBuyParams(params: {
       return { error: 'NFT not found in contract' };
     }
 
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      return { error: 'Listing index address not configured.' };
+    }
+
     const buyerUtxos = await getUtxos(buyerAddress);
-    const fundingUtxos = selectUtxos(buyerUtxos, listing.price + 2000n);
+    const fundingUtxos = selectUtxos(buyerUtxos, listing.price + 3000n);
 
     const buyerLockingBytecode = getLockingBytecode(buyerAddress);
     const sellerLockingBytecode = getLockingBytecode(listing.sellerAddress);
@@ -987,15 +1145,32 @@ export async function buildWcBuyParams(params: {
     const royalty = (listing.price * BigInt(listing.royaltyBasisPoints)) / 10000n;
     const sellerAmount = listing.price - royalty;
 
+    const indexLockingBytecode = getLockingBytecode(indexAddress);
+    const buyerPkh = getPkhHexFromAddress(buyerAddress);
+    const eventHex = buildStatusEventHex({
+      listingTxid: listing.txid,
+      status: 'sold',
+      actorPkh: buyerPkh,
+    });
+    const opReturnLockingBytecode = encodeNullDataScript([
+      Op.OP_RETURN,
+      hexToBytes(eventHex),
+    ]);
+
     const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
       { lockingBytecode: sellerLockingBytecode, valueSatoshis: sellerAmount },
       { lockingBytecode: creatorLockingBytecode, valueSatoshis: royalty },
       { lockingBytecode: buyerLockingBytecode, valueSatoshis: 1000n, token },
+      { lockingBytecode: indexLockingBytecode, valueSatoshis: 546n },
+      { lockingBytecode: opReturnLockingBytecode, valueSatoshis: 0n },
     ];
 
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
-    const fee = 1000n;
-    const change = totalInput - sellerAmount - royalty - 1000n - fee;
+    const fee = 2000n;
+    const change = totalInput - sellerAmount - royalty - 1000n - 546n - fee;
+    if (change < 0n) {
+      return { error: 'Insufficient funds for purchase fees.' };
+    }
     if (change > 546n) {
       outputs.push({ lockingBytecode: buyerLockingBytecode, valueSatoshis: change });
     }
@@ -1091,8 +1266,13 @@ export async function buildWcBidParams(params: {
     }
     const prevBidderPkhHex = Buffer.from(decodedPrev.payload).toString('hex');
 
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      return { error: 'Listing index address not configured.' };
+    }
+
     const bidderUtxos = await getUtxos(bidderAddress);
-    const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 2000n);
+    const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 3000n);
 
     const bidderLockingBytecode = getLockingBytecode(bidderAddress);
     const contractLockingBytecode = getLockingBytecode(contract.address);
@@ -1129,6 +1309,18 @@ export async function buildWcBidParams(params: {
       };
     });
 
+    const indexLockingBytecode = getLockingBytecode(indexAddress);
+    const bidderPkh = getPkhHexFromAddress(bidderAddress);
+    const eventHex = buildBidEventHex({
+      listingTxid: auction.txid,
+      bidderPkh,
+      bidAmount,
+    });
+    const opReturnLockingBytecode = encodeNullDataScript([
+      Op.OP_RETURN,
+      hexToBytes(eventHex),
+    ]);
+
     const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
       { lockingBytecode: contractLockingBytecode, valueSatoshis: bidAmount, token },
     ];
@@ -1138,9 +1330,20 @@ export async function buildWcBidParams(params: {
       outputs.push({ lockingBytecode: prevBidderLockingBytecode, valueSatoshis: currentBid });
     }
 
+    outputs.push({ lockingBytecode: indexLockingBytecode, valueSatoshis: 546n });
+    outputs.push({ lockingBytecode: opReturnLockingBytecode, valueSatoshis: 0n });
+
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
-    const fee = 1000n;
-    const change = totalInput - bidAmount - (currentBid > 0n ? currentBid : 0n) - fee;
+    const fee = 2000n;
+    const change =
+      totalInput -
+      bidAmount -
+      (currentBid > 0n ? currentBid : 0n) -
+      546n -
+      fee;
+    if (change < 0n) {
+      return { error: 'Insufficient funds for bid fees.' };
+    }
     if (change > 546n) {
       outputs.push({ lockingBytecode: bidderLockingBytecode, valueSatoshis: change });
     }
@@ -1232,8 +1435,13 @@ export async function buildWcClaimParams(params: {
       return { error: 'No winning bid to claim' };
     }
 
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      return { error: 'Listing index address not configured.' };
+    }
+
     const winnerUtxos = await getUtxos(winnerAddress);
-    const feeUtxos = selectUtxos(winnerUtxos, 2000n);
+    const feeUtxos = selectUtxos(winnerUtxos, 3000n);
 
     const winnerLockingBytecode = getLockingBytecode(winnerAddress);
     const sellerLockingBytecode = getLockingBytecode(auction.sellerAddress);
@@ -1275,15 +1483,32 @@ export async function buildWcClaimParams(params: {
     const royalty = (finalBid * BigInt(auction.royaltyBasisPoints)) / 10000n;
     const sellerAmount = finalBid - royalty;
 
+    const indexLockingBytecode = getLockingBytecode(indexAddress);
+    const winnerPkh = getPkhHexFromAddress(winnerAddress);
+    const eventHex = buildStatusEventHex({
+      listingTxid: auction.txid,
+      status: 'claimed',
+      actorPkh: winnerPkh,
+    });
+    const opReturnLockingBytecode = encodeNullDataScript([
+      Op.OP_RETURN,
+      hexToBytes(eventHex),
+    ]);
+
     const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
       { lockingBytecode: sellerLockingBytecode, valueSatoshis: sellerAmount },
       { lockingBytecode: creatorLockingBytecode, valueSatoshis: royalty },
       { lockingBytecode: winnerLockingBytecode, valueSatoshis: 1000n, token },
+      { lockingBytecode: indexLockingBytecode, valueSatoshis: 546n },
+      { lockingBytecode: opReturnLockingBytecode, valueSatoshis: 0n },
     ];
 
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
-    const fee = 1000n;
-    const change = totalInput - sellerAmount - royalty - 1000n - fee;
+    const fee = 2000n;
+    const change = totalInput - sellerAmount - royalty - 1000n - 546n - fee;
+    if (change < 0n) {
+      return { error: 'Insufficient funds for claim fees.' };
+    }
     if (change > 546n) {
       outputs.push({ lockingBytecode: winnerLockingBytecode, valueSatoshis: change });
     }

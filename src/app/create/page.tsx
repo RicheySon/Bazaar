@@ -8,7 +8,6 @@ import {
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
-import { createListing } from '@/lib/bch/api-client';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
 import { mintNFT, buildWcMintParams, createFixedListing, createAuctionListing, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
 import { getExplorerTxUrl, MARKETPLACE_CONFIG } from '@/lib/bch/config';
@@ -101,7 +100,7 @@ export default function CreatePage() {
     setError('');
     try {
       if (!isPinataConfigured()) {
-        setError('Pinata API not configured. Add NEXT_PUBLIC_PINATA_JWT to .env.local to mint NFTs.');
+        setError('Pinata API not configured. Add PINATA_JWT to .env.local to mint NFTs.');
         return;
       }
 
@@ -376,21 +375,6 @@ export default function CreatePage() {
                 BigInt(MARKETPLACE_CONFIG.minBidIncrement)
               ).address);
 
-        await createListing({
-          txid: listingResult.txid || '',
-          contractAddress,
-          sellerAddress: wallet.address,
-          creatorAddress: wallet.address,
-          tokenCategory,
-          commitment,
-          price: listingMode === 'fixed' ? priceSats.toString() : undefined,
-          minBid: listingMode === 'auction' ? minBidSats.toString() : undefined,
-          endTime: listingMode === 'auction' ? endTime : undefined,
-          minBidIncrement: listingMode === 'auction' ? MARKETPLACE_CONFIG.minBidIncrement.toString() : undefined,
-          royaltyBasisPoints: royaltyBp,
-          listingType: listingMode,
-        });
-
         setListingTxid(listingResult.txid || '');
         setStep(4);
       }
@@ -495,7 +479,7 @@ export default function CreatePage() {
             <div>
               <div className="text-xs font-medium" style={{ color: 'var(--accent-orange)' }}>Pinata API not configured</div>
               <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                Add NEXT_PUBLIC_PINATA_JWT to .env.local to enable IPFS uploads.
+                Add PINATA_JWT to .env.local to enable IPFS uploads.
               </div>
             </div>
           </div>

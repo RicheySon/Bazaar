@@ -11,7 +11,7 @@ import {
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, ipfsToHttp } from '@/lib/utils';
-import { fetchMarketplaceListingById, updateMarketplaceListingStatus } from '@/lib/bch/api-client';
+import { fetchMarketplaceListingById } from '@/lib/bch/api-client';
 import { buyNFT, buildWcBuyParams } from '@/lib/bch/contracts';
 import { loadWallet } from '@/lib/bch/wallet';
 import type { NFTListing } from '@/lib/types';
@@ -101,7 +101,6 @@ export default function NFTDetailPage() {
 
         if (!signResult) throw new Error('Transaction signing was rejected by wallet.');
 
-        await updateMarketplaceListingStatus(id, 'sold');
         setListing({ ...listing, status: 'sold' });
         setBuySuccess(true);
       } else {
@@ -111,7 +110,6 @@ export default function NFTDetailPage() {
         const result = await buyNFT(walletData.privateKey, listing, walletData.address);
         if (!result.success) throw new Error(result.error || 'Purchase failed');
 
-        await updateMarketplaceListingStatus(id, 'sold');
         setListing({ ...listing, status: 'sold' });
         setBuySuccess(true);
       }

@@ -49,7 +49,7 @@ export default function ExplorePage() {
       }
     };
     loadListings();
-    const interval = setInterval(loadListings, 10000);
+    const interval = setInterval(loadListings, 30000);
     return () => clearInterval(interval);
   }, [setLoading, setListings, setAuctions]);
 

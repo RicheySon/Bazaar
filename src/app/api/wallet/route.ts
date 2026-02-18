@@ -1,11 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ElectrumNetworkProvider } from 'cashscript';
+import { getElectrumProvider } from '@/lib/bch/electrum';
 
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
+const WALLET_CACHE_MS = Math.max(0, parseInt(process.env.WALLET_CACHE_MS || '15000'));
+const WALLET_TIMEOUT_BASE_MS = Math.max(3000, parseInt(process.env.WALLET_TIMEOUT_MS || '15000'));
+const WALLET_MAX_RETRIES = Math.max(0, parseInt(process.env.WALLET_MAX_RETRIES || '1'));
 
-function getProvider(): ElectrumNetworkProvider {
-  return new ElectrumNetworkProvider(NETWORK);
-}
+type WalletSnapshot = {
+  address: string;
+  balance: string;
+  utxoCount: number;
+  nftCount: number;
+  nfts: Array<{
+    txid: string;
+    vout: number;
+    satoshis: string;
+    tokenCategory: string;
+    nftCommitment: string;
+    nftCapability: string;
+    tokenAmount: string;
+  }>;
+};
+
+const walletCache = new Map<string, { data: WalletSnapshot; fetchedAt: number }>();
 
 // GET /api/wallet?address=bchtest:...
 // Returns balance and UTXOs for an address
@@ -16,17 +33,24 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Address is required' }, { status: 400 });
   }
 
+  if (WALLET_CACHE_MS > 0) {
+    const cached = walletCache.get(address);
+    if (cached && Date.now() - cached.fetchedAt < WALLET_CACHE_MS) {
+      return NextResponse.json({ ...cached.data, cached: true });
+    }
+  }
+
   try {
     console.log(`[Wallet API] Fetching data for address: ${address}`);
-    const electrum = getProvider();
+    const electrum = getElectrumProvider(NETWORK);
 
     // Retry logic with exponential backoff
     let lastError: Error | null = null;
-    const maxRetries = 2;
+    const maxRetries = WALLET_MAX_RETRIES;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const timeout = 20000 + (attempt * 5000); // 20s, 25s, 30s
+        const timeout = WALLET_TIMEOUT_BASE_MS + (attempt * 5000);
         console.log(`[Wallet API] Attempt ${attempt + 1}/${maxRetries + 1} with ${timeout}ms timeout`);
 
         const utxos = await Promise.race([
@@ -50,13 +74,19 @@ export async function GET(request: NextRequest) {
           tokenAmount: utxo.token?.amount?.toString() || '0',
         }));
 
-        return NextResponse.json({
+        const payload: WalletSnapshot = {
           address,
           balance: balance.toString(),
           utxoCount: utxos.length,
           nftCount: nfts.length,
           nfts,
-        });
+        };
+
+        if (WALLET_CACHE_MS > 0) {
+          walletCache.set(address, { data: payload, fetchedAt: Date.now() });
+        }
+
+        return NextResponse.json(payload);
       } catch (err) {
         lastError = err as Error;
         console.error(`[Wallet API] Attempt ${attempt + 1} failed:`, err);
@@ -72,6 +102,16 @@ export async function GET(request: NextRequest) {
     throw lastError || new Error('All retry attempts failed');
   } catch (error) {
     console.error('[Wallet API] Final error:', error);
+
+    const cached = walletCache.get(address);
+    if (cached) {
+      return NextResponse.json({
+        ...cached.data,
+        cached: true,
+        warning: 'Electrum server unavailable. Returning cached wallet data.',
+        electrumError: true,
+      });
+    }
 
     // Fallback: Return zero balance instead of failing
     // This allows the UI to function even when Electrum is down

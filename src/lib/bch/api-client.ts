@@ -98,35 +98,6 @@ export async function fetchMarketplaceListingById(id: string) {
   }
 }
 
-export async function updateMarketplaceListingStatus(id: string, status: string) {
-  try {
-    const response = await fetch(`/api/marketplace/${encodeURIComponent(id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'status', status }),
-    });
-    if (!response.ok) return false;
-    return true;
-  } catch (error) {
-    console.error('Network error updating listing:', error);
-    return false;
-  }
-}
-
-export async function recordMarketplaceBid(id: string, bidder: string, amount: string, txid: string) {
-  try {
-    const response = await fetch(`/api/marketplace/${encodeURIComponent(id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'bid', bidder, amount, txid }),
-    });
-    if (!response.ok) return false;
-    return true;
-  } catch (error) {
-    console.error('Network error recording bid:', error);
-    return false;
-  }
-}
 
 // Fetch NFTs for an address
 export async function fetchNFTs(address: string) {
@@ -147,37 +118,6 @@ export async function prepareMint(address: string, commitment: string, name: str
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, commitment, name }),
-    });
-    if (!response.ok) {
-      const err = await response.json();
-      return { success: false, error: err.error };
-    }
-    return await response.json();
-  } catch (error) {
-    return { success: false, error: 'Network error' };
-  }
-}
-
-// Create a marketplace listing
-export async function createListing(params: {
-  txid: string;
-  contractAddress: string;
-  sellerAddress: string;
-  creatorAddress?: string;
-  tokenCategory: string;
-  commitment: string;
-  price?: string;
-  minBid?: string;
-  endTime?: number;
-  minBidIncrement?: string;
-  royaltyBasisPoints: number;
-  listingType: 'fixed' | 'auction';
-}) {
-  try {
-    const response = await fetch('/api/marketplace', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
     });
     if (!response.ok) {
       const err = await response.json();
