@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'next/navigation';
-import Image from 'next/image';
 import Link from 'next/link';
 import {
   ArrowLeft, Tag, Shield, User, Copy, Check,
@@ -30,6 +29,7 @@ export default function NFTDetailPage() {
   const [copied, setCopied] = useState(false);
   const [buySuccess, setBuySuccess] = useState(false);
   const [error, setError] = useState('');
+  const imgFallbackRef = useRef(0);
 
   useEffect(() => { fetchPrice(); }, [fetchPrice]);
 
@@ -171,7 +171,18 @@ export default function NFTDetailPage() {
 
   // Show a generic NFT detail view based on the token ID
   const displayName = listing?.metadata?.name || `Token #${id.slice(0, 12)}`;
-  const displayImage = listing?.metadata?.image ? ipfsToHttp(listing.metadata.image) : null;
+  const rawImage = listing?.metadata?.image || '';
+  // Build a list of gateway URLs to try in sequence on image load error
+  const imageGateways = rawImage ? (() => {
+    const cid = rawImage.startsWith('ipfs://') ? rawImage.slice(7) : rawImage.startsWith('http') ? null : rawImage;
+    if (!cid) return rawImage ? [rawImage] : [];
+    return [
+      `${process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud'}/ipfs/${cid}`,
+      `https://ipfs.io/ipfs/${cid}`,
+      `https://cloudflare-ipfs.com/ipfs/${cid}`,
+    ];
+  })() : [];
+  const displayImage = imageGateways[0] || null;
   const displayPrice = listing?.price || 0n;
   const displayRoyalty = listing?.royaltyBasisPoints || 1000;
   const sellerAddr = listing?.sellerAddress || '';
@@ -198,12 +209,19 @@ export default function NFTDetailPage() {
               style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
             >
               {displayImage ? (
-                <Image
+                <img
                   src={displayImage}
                   alt={displayName}
-                  width={600}
-                  height={600}
                   className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const next = imgFallbackRef.current + 1;
+                    if (next < imageGateways.length) {
+                      imgFallbackRef.current = next;
+                      (e.target as HTMLImageElement).src = imageGateways[next];
+                    } else {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }
+                  }}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
