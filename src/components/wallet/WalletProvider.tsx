@@ -21,7 +21,8 @@ async function clearWalletConnectCache() {
             key.startsWith('W3M') ||
             key.startsWith('wagmi') ||
             key.includes('walletconnect') ||
-            key.includes('WalletConnect')
+            key.includes('WalletConnect') ||
+            key === 'Web3ModalConnector'
         )) {
             keysToRemove.push(key);
         }

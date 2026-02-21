@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname),
   images: {
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: 'https',
@@ -20,7 +21,7 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  transpilePackages: ['@bitauth/libauth', '@bch-wc2/web3modal-connector'],
+  transpilePackages: ['@bitauth/libauth', '@bch-wc2/web3modal-connector', '@web3modal/standalone', '@web3modal/ui', '@web3modal/core'],
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {

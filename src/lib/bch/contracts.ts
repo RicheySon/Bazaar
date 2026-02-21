@@ -2,17 +2,17 @@
 // Handles marketplace and auction contract operations on Chipnet
 
 import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact } from 'cashscript';
-import { decodeCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode } from '@bitauth/libauth';
+import { decodeCashAddress, lockingBytecodeToCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode, decodeTransaction, hexToBin } from '@bitauth/libauth';
 import { encodeNullDataScript, Op } from '@cashscript/utils';
 import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
 import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
-import { hexToBytes, isHexString, utf8ToHex } from '@/lib/utils';
+import { hexToBytes, isHexString, utf8ToHex, cidToCommitmentHex, commitmentHexToCid } from '@/lib/utils';
 import { buildListingEventHex, buildBidEventHex, buildStatusEventHex } from '@/lib/bch/listing-events';
 import { getListingIndexAddress } from '@/lib/bch/config';
-import { getElectrumProvider } from '@/lib/bch/electrum';
+import { getElectrumProvider, resetElectrumProvider } from '@/lib/bch/electrum';
 
 const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
@@ -69,6 +69,27 @@ function buildSourceOutputsJson(sourceOutputs: any[]) {
 }
 
 let provider: ElectrumNetworkProvider | null = null;
+const ELECTRUM_TIMEOUT_MS = Math.max(
+  3000,
+  parseInt(process.env.NEXT_PUBLIC_ELECTRUM_TIMEOUT_MS || '15000')
+);
+
+async function ensureElectrumConnected(electrum: ElectrumNetworkProvider) {
+  try {
+    if (typeof electrum.connectCluster === 'function') {
+      await electrum.connectCluster().catch(() => {});
+    }
+  } catch {
+    // ignore connection errors; requests may still succeed
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label)), ms)),
+  ]);
+}
 
 export function getProvider(): ElectrumNetworkProvider {
   if (!provider) {
@@ -77,11 +98,15 @@ export function getProvider(): ElectrumNetworkProvider {
   return provider;
 }
 
+export function resetProvider(): void {
+  provider = null;
+  resetElectrumProvider();
+}
+
 // Get address balance in satoshis
 export async function getBalance(address: string): Promise<bigint> {
   try {
-    const electrum = getProvider();
-    const utxos = await electrum.getUtxos(address);
+    const utxos = await getUtxos(address);
     return utxos.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
   } catch (error) {
     console.error('Failed to get balance:', error);
@@ -91,13 +116,62 @@ export async function getBalance(address: string): Promise<bigint> {
 
 // Get UTXOs for an address
 export async function getUtxos(address: string): Promise<Utxo[]> {
-  try {
-    const electrum = getProvider();
-    return await electrum.getUtxos(address);
-  } catch (error) {
-    console.error('Failed to get UTXOs:', error);
-    return [];
+  // In the browser, proxy through the server-side API so the browser never opens
+  // its own WebSocket to Electrum (which competes with the server's persistent connection).
+  if (typeof window !== 'undefined') {
+    try {
+      const res = await fetch(`/api/utxos?address=${encodeURIComponent(address)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return (data.utxos ?? []).map((u: Record<string, unknown>) => {
+        // Build the Utxo without an explicit `token: undefined` — CashScript checks
+        // property existence ('token' in utxo), so an explicit undefined causes it to
+        // try to process the token and fail with "category undefined is not a hex string".
+        const utxo: Utxo = {
+          txid: u.txid as string,
+          vout: u.vout as number,
+          satoshis: BigInt(u.satoshis as string),
+        };
+        if (u.token) {
+          const t = u.token as Record<string, unknown>;
+          utxo.token = {
+            amount: BigInt(t.amount as string),
+            category: t.category as string,
+            nft: t.nft as { capability: 'none' | 'mutable' | 'minting'; commitment: string } | undefined,
+          };
+        }
+        return utxo;
+      });
+    } catch {
+      return [];
+    }
   }
+
+  // Server-side: direct Electrum with one retry on disconnect
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    try {
+      const electrum = getProvider();
+      await ensureElectrumConnected(electrum);
+      return await withTimeout(
+        electrum.getUtxos(address),
+        ELECTRUM_TIMEOUT_MS,
+        `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isConnErr = msg.includes('disconnected') || msg.includes('timeout') || msg.includes('Electrum timeout');
+      if (isConnErr) {
+        resetProvider();
+        if (attempt === 0) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+      }
+      console.error('Failed to get UTXOs:', error);
+      return [];
+    }
+  }
+  return [];
 }
 
 // Helper to select UTXOs to cover an amount + fee
@@ -186,32 +260,15 @@ export async function createFixedListing(
   price: bigint,
   creatorPkh: string,
   royaltyBasisPoints: bigint,
-  sellerPkh: string // Added argument to reconstruction
+  sellerPkh: string,
+  sellerAddress: string, // user's actual P2PKH address for BCH fee UTXOs
 ): Promise<TransactionResult> {
   try {
-    // 1. Build marketplace contract (destination)
     const marketplace = buildMarketplaceContract(sellerPkh, price, creatorPkh, royaltyBasisPoints);
-
-    // 2. Build seller's P2PKH contract (source)
     const userContract = buildP2PKHContract(sellerPkh);
-
-    // 3. Prepare wallet signature
     const signatureTemplate = new SignatureTemplate(privateKey);
     const sellerPk = signatureTemplate.getPublicKey();
 
-    // 4. Get fee UTXOs
-    // We need 1000n (output) + fee (approx 500n) = 1500n
-    // NFT UTXO has some dust, likely 800-1000n.
-    // If NFT UTXO < 1000n, we definitely need more.
-    // Safest to ask for 2000n from wallet.
-    // But `tokenUtxo` is passed as specific object, might not match Utxo type exactly.
-    // We need to cast it or find it in user UTXOs?
-    // It's checked in `getUtxos` logic?
-    // Let's assume it matches Utxo interface or cast it.
-
-    // Note: tokenUtxo passed here doesn't have `token` property explicitly in type logic above?
-    // `tokenUtxo: { txid: string; vout: number; satoshis: bigint }`
-    // We need to shape it as Utxo for CashScript.
     const nftInput: Utxo = {
       txid: tokenUtxo.txid,
       vout: tokenUtxo.vout,
@@ -223,45 +280,15 @@ export async function createFixedListing(
       }
     };
 
-    // We need fee UTXOs.
-    // We need to fetch FRESH UTXOs from network to be safe.
-    // Assuming `getUtxos` uses address derived from `privateKey`.
-    // But we don't have address here, only `privateKey`.
-    // We can derive it? Or assume `sellerPkh` implies address?
-    // We need address to query Electrum.
-    // `wallet.ts` has `address` in `WalletData`.
-    // Here we only have `privateKey`.
-    // We can derive address from `privateKey` + chipnet prefix?
-    // `contracts.ts` shouldn't re-implement wallet logic.
-    // Ideally `createFixedListing` should take `WalletData` or `address`.
-    // But signature is fixed.
-    // Wait, `sellerPkh` is passed. We can derive address from that?
-    // Yes, `p2pkh.cash` uses `pkh`. we can query `scripthash` of `p2pkh` contract = legacy address.
-    // CashScript `Contract` has `.address`.
-
-    const fundingUtxos = await getUtxos(userContract.address);
-    // Filter out the NFT UTXO itself to avoid double usage error
+    // Fetch fee UTXOs from the seller's actual P2PKH address (not userContract.address which is P2SH32).
+    const fundingUtxos = await getUtxos(sellerAddress);
     const feeUtxos = selectUtxos(
-      fundingUtxos.filter(u => u.txid !== tokenUtxo.txid),
+      fundingUtxos.filter(u => !u.token && u.txid !== tokenUtxo.txid),
       3000n
     );
 
-    // 5. Construct Transaction
-    const tx = userContract.functions.spend(sellerPk, signatureTemplate)
-      .from(nftInput)
-      .from(feeUtxos)
-      .to(marketplace.address, 1000n, {
-        token: {
-          category: tokenCategory,
-          amount: 0n,
-          nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
-        }
-      } as any);
-
     const indexAddress = getListingIndexAddress();
-    if (!indexAddress) {
-      throw new Error('Listing index address not configured.');
-    }
+    if (!indexAddress) throw new Error('Listing index address not configured.');
 
     const eventHex = buildListingEventHex({
       listingType: 'fixed',
@@ -275,15 +302,37 @@ export async function createFixedListing(
       tokenCategory,
     });
 
+    // Compute change manually so it goes to sellerAddress, not the P2SH32 userContract address.
+    const totalIn = nftInput.satoshis + feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const fee = 2000n;
+    const fixedOuts = 1000n + 546n; // NFT output + index dust
+    const change = totalIn - fixedOuts - fee;
+
+    // fromP2PKH: correct P2PKH unlocking scripts for all inputs (not P2SH).
+    // withTime(0): no locktime, avoids getBlockHeight() Electrum call.
+    // withHardcodedFee + withoutChange: prevents CashScript from adding change to P2SH contract address.
+    const tx = userContract.functions.spend(sellerPk, signatureTemplate)
+      .fromP2PKH([nftInput, ...feeUtxos], signatureTemplate)
+      .to(marketplace.address, 1000n, {
+        category: tokenCategory,
+        amount: 0n,
+        nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
+      } as any)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
     tx.to(indexAddress, 546n);
     tx.withOpReturn([`0x${eventHex}`]);
 
-    const txDetails = await tx.send();
+    if (change > 546n) {
+      tx.to(sellerAddress, change);
+    }
 
-    return {
-      success: true,
-      txid: txDetails.txid,
-    };
+    const rawHex = await tx.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+
+    return { success: true, txid };
   } catch (error) {
     return {
       success: false,
@@ -302,18 +351,11 @@ export async function createAuctionListing(
   creatorPkh: string,
   royaltyBasisPoints: bigint,
   minBidIncrement: bigint,
-  sellerPkh: string
+  sellerPkh: string,
+  sellerAddress: string, // user's actual P2PKH address for BCH fee UTXOs
 ): Promise<TransactionResult> {
   try {
-    const auction = buildAuctionContract(
-      sellerPkh,
-      minBid,
-      endTime,
-      creatorPkh,
-      royaltyBasisPoints,
-      minBidIncrement
-    );
-
+    const auction = buildAuctionContract(sellerPkh, minBid, endTime, creatorPkh, royaltyBasisPoints, minBidIncrement);
     const userContract = buildP2PKHContract(sellerPkh);
     const signatureTemplate = new SignatureTemplate(privateKey);
     const sellerPk = signatureTemplate.getPublicKey();
@@ -329,27 +371,15 @@ export async function createAuctionListing(
       }
     };
 
-    const fundingUtxos = await getUtxos(userContract.address);
+    // Fetch fee UTXOs from the seller's actual P2PKH address (not userContract.address which is P2SH32).
+    const fundingUtxos = await getUtxos(sellerAddress);
     const feeUtxos = selectUtxos(
-      fundingUtxos.filter(u => u.txid !== tokenUtxo.txid),
+      fundingUtxos.filter(u => !u.token && u.txid !== tokenUtxo.txid),
       3000n
     );
 
-    const tx = userContract.functions.spend(sellerPk, signatureTemplate)
-      .from(nftInput)
-      .from(feeUtxos)
-      .to(auction.address, 1000n, {
-        token: {
-          category: tokenCategory,
-          amount: 0n,
-          nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
-        }
-      } as any);
-
     const indexAddress = getListingIndexAddress();
-    if (!indexAddress) {
-      throw new Error('Listing index address not configured.');
-    }
+    if (!indexAddress) throw new Error('Listing index address not configured.');
 
     const eventHex = buildListingEventHex({
       listingType: 'auction',
@@ -363,15 +393,33 @@ export async function createAuctionListing(
       tokenCategory,
     });
 
+    const totalIn = nftInput.satoshis + feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const fee = 2000n;
+    const fixedOuts = 1000n + 546n;
+    const change = totalIn - fixedOuts - fee;
+
+    const tx = userContract.functions.spend(sellerPk, signatureTemplate)
+      .fromP2PKH([nftInput, ...feeUtxos], signatureTemplate)
+      .to(auction.address, 1000n, {
+        category: tokenCategory,
+        amount: 0n,
+        nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
+      } as any)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
     tx.to(indexAddress, 546n);
     tx.withOpReturn([`0x${eventHex}`]);
 
-    const txDetails = await tx.send();
+    if (change > 546n) {
+      tx.to(sellerAddress, change);
+    }
 
-    return {
-      success: true,
-      txid: txDetails.txid,
-    };
+    const rawHex = await tx.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+
+    return { success: true, txid };
   } catch (error) {
     return {
       success: false,
@@ -436,7 +484,7 @@ export async function buyNFT(
     tx.to(listing.creatorAddress, royalty);     // Output 1
 
     // Output 2: NFT to Buyer
-    tx.to(buyerAddress, 1000n, { token: { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } } as any);
+    tx.to(buyerAddress, 1000n, { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } as any);
 
     const buyerPkh = getPkhHexFromAddress(buyerAddress);
     const eventHex = buildStatusEventHex({
@@ -521,7 +569,7 @@ export async function cancelListing(
 
     tx.from(nftUtxo)
       .fromP2PKH(feeUtxos, signatureTemplate)
-      .to(listing.sellerAddress, 1000n, { token: { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } } as any);
+      .to(listing.sellerAddress, 1000n, { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } as any);
 
     const sellerPkh = getPkhHexFromAddress(listing.sellerAddress);
     const eventHex = buildStatusEventHex({
@@ -587,7 +635,7 @@ export async function placeBid(
     const tx = contract.functions.bid(currentBid, prevBidderPkh)
       .from(nftUtxo)
       .fromP2PKH(fundingUtxos, bidderTemplate)
-      .to(contract.address, bidAmount, { token: { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } } as any);
+      .to(contract.address, bidAmount, { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } as any);
 
     // Output 1: Refund
     if (currentBid > 0) {
@@ -663,7 +711,7 @@ export async function claimAuction(
     tx.to(auction.creatorAddress, royalty);
 
     // Send NFT to winner (currentBidder)
-    tx.to(auction.currentBidder, 1000n, { token: { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } } as any);
+    tx.to(auction.currentBidder, 1000n, { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } as any);
 
     const winnerPkh = getPkhHexFromAddress(winnerAddress);
     const eventHex = buildStatusEventHex({
@@ -690,7 +738,8 @@ export async function claimAuction(
 }
 
 // Build WalletConnect mint transaction params (used by create page)
-// Returns hex-encoded transaction + sourceOutputs for signTransaction, or an error
+// Uses CashScript build() + decodeTransaction for correct byte order and CashTokens encoding.
+// Returns hex-encoded transaction + sourceOutputs for signTransaction, or an error.
 export async function buildWcMintParams(
   address: string,
   commitment: string,
@@ -702,140 +751,130 @@ export async function buildWcMintParams(
   sourceOutputsJson: object[];
   category: string;
   userPrompt: string;
-} | { error: string }> {
+  } | { error: string }> {
   try {
-    const electrum = getProvider();
     wcLog('[WC Mint] Fetching UTXOs for', address);
-    const utxos = await electrum.getUtxos(address);
+    const utxos = await getUtxos(address);
     wcLog('[WC Mint] Got', utxos.length, 'UTXOs');
-
-    if (utxos.length === 0) {
-      return { error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.' };
+    if (utxos.length > 0) {
+      wcLog('[WC Mint] First UTXO keys:', Object.keys(utxos[0]));
+      wcLog('[WC Mint] First UTXO:', JSON.stringify(utxos[0], (_, v) => typeof v === 'bigint' ? v.toString() + 'n' : v));
     }
 
-    const fundingUtxos = selectUtxos(utxos, 2000n);
-    const genesisInput = fundingUtxos[0];
-    const category = genesisInput.txid;
-    const commitmentBytes = new Uint8Array(Buffer.from(commitment, 'utf8'));
+    if (utxos.length === 0) {
+      return {
+        error: 'No UTXOs available or Electrum is unavailable. Please fund your wallet or check your Electrum server.',
+      };
+    }
 
+    // CashTokens genesis: must find a UTXO with vout=0 (BCH protocol requirement).
+    const nonTokenUtxos = utxos.filter(u => !u.token);
+    const genesisInput = nonTokenUtxos.find(u => u.vout === 0);
+    if (!genesisInput) {
+      return {
+        error: 'No genesis-capable UTXO found (need a UTXO at output index 0). Try requesting BCH from the Chipnet faucet, or send a small amount to your address from another wallet.',
+      };
+    }
+    const category = genesisInput.txid;
+    wcLog('[WC Mint] category (genesisInput.txid):', category);
+
+    // Build funding list: genesis input first, then other BCH UTXOs to cover fees.
+    const otherUtxos = nonTokenUtxos
+      .filter(u => !(u.txid === genesisInput.txid && u.vout === genesisInput.vout))
+      .sort((a, b) => Number(b.satoshis - a.satoshis));
+    const fundingUtxos: Utxo[] = [genesisInput];
+    let totalSats = genesisInput.satoshis;
+    for (const u of otherUtxos) {
+      if (totalSats >= 4000n) break;
+      fundingUtxos.push(u);
+      totalSats += u.satoshis;
+    }
+    if (totalSats < 2000n) {
+      return { error: `Insufficient funds: ${totalSats} sats. Fund your wallet from the Chipnet faucet.` };
+    }
+
+    const commitmentHex = cidToCommitmentHex(commitment);
+
+    // Locking bytecode for the user's address (used in sourceOutputs)
+    const userLockingBytecode = getLockingBytecode(address);
+
+    // Get user's PKH from their address for P2PKH contract
     const decoded = decodeCashAddress(address);
     if (typeof decoded === 'string') {
       return { error: 'Invalid address: ' + decoded };
     }
-    const addrPkh = decoded.payload;
-    const lockingBytecode = new Uint8Array([0x76, 0xa9, 0x14, ...addrPkh, 0x88, 0xac]);
+    const userPkhHex = Buffer.from(decoded.payload).toString('hex');
 
-    // sourceOutputs: libauth Input & Output fields
-    const sourceOutputs = fundingUtxos.map(utxo => ({
-      outpointIndex: utxo.vout,
-      outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
-      sequenceNumber: 0xffffffff, // Final, non-RBF
-      unlockingBytecode: new Uint8Array(), // CRITICAL: Empty so wallet recognizes it needs signing
-      lockingBytecode: lockingBytecode,
+    // Derive the token-capable (z-prefix) address for the NFT output.
+    // CashTokens requires NFT outputs to go to p2pkhWithTokens addresses.
+    // lockingBytecodeToCashAddress with tokenSupport=true returns the z-prefix address.
+    const tokenAddrResult = lockingBytecodeToCashAddress({
+      bytecode: userLockingBytecode,
+      prefix: decoded.prefix,
+      tokenSupport: true,
+    });
+    if (typeof tokenAddrResult === 'string') {
+      return { error: 'Failed to derive token address: ' + tokenAddrResult };
+    }
+    const tokenAddress = tokenAddrResult.address;
+
+    // Use a dummy private key to build the CashScript transaction structure.
+    // The wallet will sign via WalletConnect — we clear unlockingBytecodes below.
+    const dummyKey = new Uint8Array(32);
+    dummyKey[31] = 1; // Private key = 1, a valid secp256k1 key
+    const dummyTemplate = new SignatureTemplate(dummyKey);
+    const dummyPk = dummyTemplate.getPublicKey();
+    const userContract = buildP2PKHContract(userPkhHex);
+
+    // Build the CashTokens genesis transaction via CashScript.
+    // fromP2PKH: generates standard P2PKH unlock scripts (cleared below for WC signing).
+    // Token data passed directly (no extra token: wrapper) — that is the correct CashScript API.
+    const fee = BigInt(Math.max(500, fundingUtxos.length * 148 + 200));
+    const change = totalSats - 1000n - fee;
+    const wcTx = userContract.functions.spend(dummyPk, dummyTemplate)
+      .fromP2PKH(fundingUtxos, dummyTemplate)
+      .to(tokenAddress, 1000n, {
+        category,
+        amount: 0n,
+        nft: { capability: 'none', commitment: commitmentHex },
+      } as any)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+    if (change > 546n) {
+      wcTx.to(address, change);
+    }
+    const rawHex = await wcTx.build();
+
+    // Decode to get the canonical Transaction object (correct byte order guaranteed)
+    const decodedTx = decodeTransaction(hexToBin(rawHex));
+    if (typeof decodedTx === 'string') {
+      return { error: 'Failed to decode built transaction: ' + decodedTx };
+    }
+
+    // Clear all inputs' unlockingBytecode — the wallet (WalletConnect) signs all P2PKH inputs
+    decodedTx.inputs.forEach(inp => { inp.unlockingBytecode = new Uint8Array(); });
+
+    // Re-encode the cleared transaction for the hex field
+    const transactionHex = binToHex(encodeTransaction(decodedTx));
+
+    // Construct sourceOutputs: decoded input fields + UTXO's locking script and value
+    const sourceOutputs = fundingUtxos.map((utxo, i) => ({
+      ...decodedTx.inputs[i],
+      lockingBytecode: userLockingBytecode,
       valueSatoshis: utxo.satoshis,
     }));
 
-    const totalInput = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
-    const fee = 1000n;
-    const nftDust = 1000n;
-    const change = totalInput - nftDust - fee;
-
-    const categoryBytes = new Uint8Array(Buffer.from(category, 'hex'));
-
-    const txOutputs: Array<{
-      lockingBytecode: Uint8Array;
-      valueSatoshis: bigint;
-      token?: {
-        category: Uint8Array;
-        amount: bigint;
-        nft?: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array };
-      };
-    }> = [
-        {
-          lockingBytecode: lockingBytecode,
-          valueSatoshis: nftDust,
-          token: {
-            category: categoryBytes,
-            amount: 0n,
-            nft: {
-              capability: 'none' as const,
-              commitment: commitmentBytes,
-            }
-          }
-        }
-      ];
-
-    if (change > 546n) {
-      txOutputs.push({
-        lockingBytecode: lockingBytecode,
-        valueSatoshis: change,
-      });
-    }
-
-    // Build the libauth Transaction object
-    const transaction = {
-      version: 2,
-      inputs: sourceOutputs.map(so => ({
-        outpointIndex: so.outpointIndex,
-        outpointTransactionHash: so.outpointTransactionHash,
-        sequenceNumber: so.sequenceNumber,
-        unlockingBytecode: so.unlockingBytecode,
-      })),
-      outputs: txOutputs,
-      locktime: 0,
-    };
-
-    // Encode to raw hex — bypasses the stringify() serialization issue
-    // The WcSignTransactionRequest accepts `transaction: Transaction | string`
-    const txBytes = encodeTransaction(transaction);
-    const transactionHex = binToHex(txBytes);
-
-    wcLog('[WC Mint] ========== TRANSACTION DEBUG ==========');
-    wcLog('[WC Mint] Built tx:', fundingUtxos.length, 'inputs,', txOutputs.length, 'outputs');
-    wcLog('[WC Mint] Category (hex):', category);
-    wcLog('[WC Mint] Category (bytes):', categoryBytes);
-    wcLog('[WC Mint] Commitment (string):', commitment);
-    wcLog('[WC Mint] Commitment (bytes):', commitmentBytes);
-    wcLog('[WC Mint] Total input:', totalInput.toString(), 'satoshis');
-    wcLog('[WC Mint] Fee:', fee.toString(), 'satoshis');
-    wcLog('[WC Mint] Change:', change.toString(), 'satoshis');
-    wcLog('[WC Mint] NFT Dust:', nftDust.toString(), 'satoshis');
-    wcLog('[WC Mint] Tx hex length:', transactionHex.length, 'chars, bytes:', txBytes.length);
-    wcLog('[WC Mint] Transaction object:', JSON.stringify({
-      version: transaction.version,
-      inputs: transaction.inputs.map(inp => ({
-        outpointIndex: inp.outpointIndex,
-        outpointTransactionHash: binToHex(inp.outpointTransactionHash),
-        sequenceNumber: inp.sequenceNumber,
-        unlockingBytecode: binToHex(inp.unlockingBytecode), // Should be empty
-      })),
-      outputs: transaction.outputs.map(out => ({
-        lockingBytecode: binToHex(out.lockingBytecode),
-        valueSatoshis: out.valueSatoshis.toString(),
-        token: out.token ? {
-          category: binToHex(out.token.category),
-          amount: out.token.amount.toString(),
-          nft: out.token.nft
-        } : undefined,
-      })),
-      locktime: transaction.locktime,
-    }, null, 2));
-    wcLog('[WC Mint] SourceOutputs:', JSON.stringify(sourceOutputs.map(so => ({
-      outpointIndex: so.outpointIndex,
-      outpointTransactionHash: binToHex(so.outpointTransactionHash),
-      sequenceNumber: so.sequenceNumber,
-      unlockingBytecode: binToHex(so.unlockingBytecode), // Should be empty ''
-      lockingBytecode: binToHex(so.lockingBytecode),
-      valueSatoshis: so.valueSatoshis.toString(),
-    })), null, 2));
-    wcLog('[WC Mint] ==========================================');
+    wcLog('[WC Mint] Built tx via CashScript build():', fundingUtxos.length, 'inputs,', decodedTx.outputs.length, 'outputs');
+    wcLog('[WC Mint] Category:', category, '| Commitment:', commitmentHex);
+    wcLog('[WC Mint] Tx hex length:', transactionHex.length);
 
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
 
     return {
       transactionHex,
-      transaction, // Return the full object
-      sourceOutputs: sourceOutputs,
+      transaction: decodedTx,
+      sourceOutputs,
       sourceOutputsJson,
       category,
       userPrompt: `Mint NFT: ${metadata.name}`,
@@ -868,8 +907,7 @@ export async function buildWcListingParams(params: {
   userPrompt: string;
 } | { error: string }> {
   try {
-    const electrum = getProvider();
-    const utxos = await electrum.getUtxos(params.address);
+    const utxos = await getUtxos(params.address);
     if (utxos.length === 0) {
       return { error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.' };
     }
@@ -1548,64 +1586,100 @@ export async function buildWcClaimParams(params: {
   }
 }
 
-// Mint a new CashTokens NFT (generated wallet path only)
+// Mint a new CashTokens NFT (server-side only — called via /api/mint)
 export async function mintNFT(
   privateKey: Uint8Array,
   pkh: string,
-  address: string,
-  commitment: string,
-  metadata: { name: string; description: string; image: string },
+  address: string,        // P2PKH funding address (where BCH lives)
+  tokenAddress: string,   // token-capable address (z… prefix) for NFT output
+  commitment: string,     // IPFS CID or arbitrary UTF-8 string (truncated to 40 bytes)
 ): Promise<TransactionResult> {
   try {
-
-    // CashTokens genesis: spend a regular UTXO, create output with token data
-    // Token category = txid of input being spent (specifically the 0th input)
-
+    // CashTokens genesis: the token category = txid of the genesis input.
+    // BCH protocol requires the genesis input to have vout === 0.
     const userContract = buildP2PKHContract(pkh);
-    const electrum = getProvider();
-    const utxos = await electrum.getUtxos(address);
+    const utxos = await getUtxos(address);
 
     if (utxos.length === 0) {
       return {
         success: false,
-        error: 'No UTXOs available. Please fund your wallet from the Chipnet faucet.',
+        error: 'No UTXOs available or Electrum is unavailable. Please fund your wallet or check your Electrum server.',
       };
     }
 
-    // Select UTXOs.
-    // We need at least 1000n (for NFT dust) + fee (approx 1000n) = 2000n.
-    // We pick the largest generic UTXO as the genesis input.
-    const fundingUtxos = selectUtxos(utxos, 2000n);
-    const genesisInput = fundingUtxos[0];
+    // Find a UTXO with vout=0 — required by BCH CashTokens spec for genesis minting.
+    const nonTokenUtxos = utxos.filter(u => !u.token);
+    const genesisInput = nonTokenUtxos.find(u => u.vout === 0);
 
-    // The category ID of the new token will be the TXID of the *first* input.
+    if (!genesisInput) {
+      return {
+        success: false,
+        error: 'No genesis-capable UTXO found (need a UTXO at output index 0). Try requesting BCH from the faucet again, or send a small amount to your address from another wallet.',
+      };
+    }
+
+    // The token category = txid of the first input (the genesis input).
     const category = genesisInput.txid;
 
-    // Encode commitment string to hex
-    const commitmentHex = Buffer.from(commitment, 'utf8').toString('hex');
+    // Encode CIDv1 as binary bytes (36 bytes = 72 hex chars, fits in 40-byte BCH limit).
+    const commitmentHex = cidToCommitmentHex(commitment);
 
     const signatureTemplate = new SignatureTemplate(privateKey);
     const pk = signatureTemplate.getPublicKey();
 
-    const tx = userContract.functions.spend(pk, signatureTemplate)
-      .from(fundingUtxos)
-      .to(address, 1000n, {
-        token: {
-          category: category,
-          amount: 0n,
-          nft: {
-            capability: 'none', // Immutable NFT
-            commitment: commitmentHex
-          }
-        }
-      } as any);
+    // Send the newly minted NFT to the token-capable address (z… prefix).
+    const outputAddress = tokenAddress || address;
 
-    const txDetails = await tx.send();
+    // Build input list: genesis input first (required), then other BCH UTXOs for fees.
+    const otherUtxos = nonTokenUtxos
+      .filter(u => !(u.txid === genesisInput.txid && u.vout === genesisInput.vout))
+      .sort((a, b) => Number(b.satoshis - a.satoshis));
+
+    const allFundingUtxos: Utxo[] = [genesisInput];
+    let totalSats = genesisInput.satoshis;
+    for (const u of otherUtxos) {
+      if (totalSats >= 4000n) break;
+      allFundingUtxos.push(u);
+      totalSats += u.satoshis;
+    }
+
+    if (totalSats < 2000n) {
+      return { success: false, error: `Insufficient funds: ${totalSats} sats available, need at least 2000 sats for minting.` };
+    }
+
+    // Fee estimate: 148 bytes per P2PKH input + ~200 bytes for outputs/overhead
+    const fee = BigInt(Math.max(500, allFundingUtxos.length * 148 + 200));
+    const nftOutputSats = 1000n;
+    const change = totalSats - nftOutputSats - fee;
+
+    // fromP2PKH: generates standard P2PKH unlocking scripts (not P2SH).
+    // withTime(0): sets locktime=0, avoids calling getBlockHeight() on Electrum.
+    // withHardcodedFee + withoutChange: prevents CashScript from adding change to
+    //   the P2SH32 contract address — we add change to the user's real address manually.
+    const tx = userContract.functions.spend(pk, signatureTemplate)
+      .fromP2PKH(allFundingUtxos, signatureTemplate)
+      .to(outputAddress, nftOutputSats, {
+        category: category,
+        amount: 0n,
+        nft: { capability: 'none', commitment: commitmentHex },
+      } as any)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    if (change > 546n) {
+      tx.to(address, change);
+    }
+
+    // Build the signed tx hex, then broadcast directly — bypasses CashScript's
+    // debug() call which would fail when all inputs are P2PKH (no contract inputs).
+    const rawHex = await tx.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
 
     return {
       success: true,
-      txid: txDetails.txid,
-      tokenCategory: category
+      txid,
+      tokenCategory: category,
     };
   } catch (error) {
     return {
@@ -1622,11 +1696,5 @@ export function normalizeCommitment(commitment: string): string {
 }
 
 export function decodeCommitmentToCid(commitment: string): string {
-  if (!commitment) return '';
-  if (!isHexString(commitment)) return commitment;
-  try {
-    return new TextDecoder().decode(hexToBytes(commitment));
-  } catch {
-    return commitment;
-  }
+  return commitmentHexToCid(commitment);
 }

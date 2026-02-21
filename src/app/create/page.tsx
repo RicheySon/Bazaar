@@ -9,7 +9,7 @@ import {
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
-import { mintNFT, buildWcMintParams, createFixedListing, createAuctionListing, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
+import { buildWcMintParams, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
 import { getExplorerTxUrl, MARKETPLACE_CONFIG } from '@/lib/bch/config';
 import { bchToSatoshis } from '@/lib/utils';
 import { decodeCashAddress } from '@bitauth/libauth';
@@ -42,7 +42,7 @@ export default function CreatePage() {
   const [error, setError] = useState('');
 
   const waitForTokenUtxo = async (address: string, tokenCategory: string) => {
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 12; i++) {
       const tokenUtxos = await getTokenUtxos(address);
       const utxo = tokenUtxos.find((u) => u.token?.category === tokenCategory);
       if (utxo && utxo.token?.nft) return utxo;
@@ -199,22 +199,25 @@ export default function CreatePage() {
             mintResult = { success: false, error: msg };
           }
         } else {
-          // Generated Wallet Minting
+          // Generated Wallet Minting — delegated to server-side /api/mint
           const walletData = loadWallet();
           if (!walletData) { setError('Wallet not found. Please reconnect.'); setStep(0); return; }
 
           const walletPkh = getPkhHex(walletData);
-          mintResult = await mintNFT(
-            walletData.privateKey,
-            walletPkh,
-            walletData.address,
-            metadataResult.ipfsHash,
-            {
-              name: name.trim(),
-              description: description.trim(),
-              image: imageResult.ipfsUri
-            },
-          );
+          const privateKeyHex = Buffer.from(walletData.privateKey).toString('hex');
+
+          const mintResponse = await fetch('/api/mint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              privateKeyHex,
+              pkh: walletPkh,
+              address: walletData.address,
+              tokenAddress: walletData.tokenAddress,
+              commitment: metadataResult.ipfsHash,
+            }),
+          });
+          mintResult = await mintResponse.json();
         }
 
         if (!mintResult.success) { setError(mintResult.error || 'Minting failed'); setStep(0); return; }
@@ -222,7 +225,11 @@ export default function CreatePage() {
         setMintTxid(mintResult.txid || '');
 
         const tokenCategory = mintResult.tokenCategory || '';
-        const nftUtxo = await waitForTokenUtxo(wallet.address, tokenCategory);
+        // Internal wallet mints to tokenAddress (z… prefix); WalletConnect wallet manages its own address.
+        const pollAddress = connectionType !== 'walletconnect' && wallet.tokenAddress
+          ? wallet.tokenAddress
+          : wallet.address;
+        const nftUtxo = await waitForTokenUtxo(pollAddress, tokenCategory);
         if (!nftUtxo || !nftUtxo.token?.nft) {
           setError('NFT not found in wallet yet. Please refresh and try listing again.');
           setStep(0);
@@ -303,47 +310,39 @@ export default function CreatePage() {
             listingResult = { success: false, error: msg };
           }
         } else {
+          // Internal wallet listing — delegated to server-side /api/list
           const walletData = loadWallet();
           if (!walletData) { setError('Wallet not found. Please reconnect.'); setStep(0); return; }
 
           sellerPkh = getPkhHex(walletData);
           creatorPkh = sellerPkh;
 
-          if (listingMode === 'fixed') {
-            listingResult = await createFixedListing(
-              walletData.privateKey,
+          const privateKeyHex = Buffer.from(walletData.privateKey).toString('hex');
+          const listResponse = await fetch('/api/list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              privateKeyHex,
+              sellerPkh,
+              sellerAddress: walletData.address,
+              creatorPkh,
               tokenCategory,
-              {
+              nftUtxo: {
                 txid: nftUtxo.txid,
                 vout: nftUtxo.vout,
-                satoshis: nftUtxo.satoshis,
+                satoshis: nftUtxo.satoshis.toString(),
                 commitment,
                 capability: nftUtxo.token.nft.capability,
               },
-              priceSats,
-              creatorPkh,
-              BigInt(royaltyBp),
-              sellerPkh
-            );
-          } else {
-            listingResult = await createAuctionListing(
-              walletData.privateKey,
-              tokenCategory,
-              {
-                txid: nftUtxo.txid,
-                vout: nftUtxo.vout,
-                satoshis: nftUtxo.satoshis,
-                commitment,
-                capability: nftUtxo.token.nft.capability,
-              },
-              minBidSats,
-              BigInt(endTime),
-              creatorPkh,
-              BigInt(royaltyBp),
-              BigInt(MARKETPLACE_CONFIG.minBidIncrement),
-              sellerPkh
-            );
-          }
+              listingType: listingMode,
+              price: listingMode === 'fixed' ? priceSats.toString() : '0',
+              minBid: listingMode === 'auction' ? minBidSats.toString() : '0',
+              endTime: listingMode === 'auction' ? endTime.toString() : '0',
+              royaltyBasisPoints: royaltyBp.toString(),
+              minBidIncrement: MARKETPLACE_CONFIG.minBidIncrement.toString(),
+            }),
+          });
+          listingResult = await listResponse.json();
         }
 
         if (!sellerPkh || !creatorPkh) {

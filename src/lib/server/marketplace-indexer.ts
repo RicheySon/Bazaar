@@ -15,7 +15,7 @@ import auctionArtifact from '@/lib/bch/artifacts/auction.json';
 import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload } from '@/lib/bch/listing-events';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
 import { getListingIndexAddress } from '@/lib/bch/config';
-import { hexToUtf8, isHexString } from '@/lib/utils';
+import { commitmentHexToCid } from '@/lib/utils';
 import { getElectrumProvider } from '@/lib/bch/electrum';
 
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
@@ -36,13 +36,7 @@ let marketplaceInFlight: Promise<MarketplaceData> | null = null;
 
 
 function commitmentToCid(commitment: string): string {
-  if (!commitment) return '';
-  if (!isHexString(commitment)) return commitment;
-  try {
-    return hexToUtf8(commitment);
-  } catch {
-    return commitment;
-  }
+  return commitmentHexToCid(commitment);
 }
 
 async function enrichMetadata(commitmentHex: string) {

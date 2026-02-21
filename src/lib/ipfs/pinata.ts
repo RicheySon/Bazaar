@@ -3,6 +3,20 @@
 const PINATA_JWT = process.env.PINATA_JWT || '';
 const PINATA_GATEWAY = process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud';
 const PINATA_API = 'https://api.pinata.cloud';
+const PINATA_UPLOAD_TIMEOUT_MS = Math.max(
+  3000,
+  parseInt(process.env.NEXT_PUBLIC_PINATA_UPLOAD_TIMEOUT_MS || '20000')
+);
+
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 const IS_BROWSER = typeof window !== 'undefined';
 
 export interface PinataUploadResult {
@@ -19,16 +33,25 @@ export async function uploadFileToPinata(file: File): Promise<PinataUploadResult
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch('/api/ipfs/upload', { method: 'POST', body: formData });
+      const response = await fetchWithTimeout(
+        '/api/ipfs/upload',
+        { method: 'POST', body: formData },
+        PINATA_UPLOAD_TIMEOUT_MS
+      );
       if (!response.ok) {
-        const error = await response.text();
-        return { success: false, error: error || 'Pinata upload failed' };
+        try {
+          const json = await response.json();
+          return { success: false, error: json.error || 'Pinata upload failed' };
+        } catch {
+          return { success: false, error: 'Pinata upload failed' };
+        }
       }
       return await response.json();
     } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
       return {
         success: false,
-        error: `Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        error: msg.includes('aborted') ? 'Upload timed out. Check your connection or try a smaller file.' : `Upload failed: ${msg}`,
       };
     }
   }
@@ -95,11 +118,15 @@ export async function uploadMetadataToPinata(metadata: {
 }): Promise<PinataUploadResult> {
   if (IS_BROWSER) {
     try {
-      const response = await fetch('/api/ipfs/metadata', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(metadata),
-      });
+      const response = await fetchWithTimeout(
+        '/api/ipfs/metadata',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(metadata),
+        },
+        PINATA_UPLOAD_TIMEOUT_MS
+      );
       if (!response.ok) {
         const error = await response.text();
         return { success: false, error: error || 'Metadata upload failed' };

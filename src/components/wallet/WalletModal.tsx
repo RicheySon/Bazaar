@@ -25,6 +25,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const [copied, setCopied] = useState(false);
   const [showSeed, setShowSeed] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const handleCreate = () => {
     try {
@@ -39,12 +40,14 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   };
 
   const handleWalletConnect = async () => {
+    if (isConnecting) return;
     try {
       if (wcDebug) {
         console.log('--- STARTING WALLETCONNECT ---');
         console.log('Connect function available:', !!connect);
       }
 
+      setIsConnecting(true);
       setError('');
       // This opens the WalletConnect QR modal
       if (wcDebug) {
@@ -72,6 +75,8 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
       }
 
       setError(err instanceof Error ? err.message : JSON.stringify(err) || 'Failed to connect wallet');
+    } finally {
+      setIsConnecting(false);
     }
   };
 
@@ -193,15 +198,25 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                   </button>
 
                   <button onClick={handleWalletConnect}
-                    className="w-full flex items-center gap-3 p-4 rounded-lg border transition-all hover:border-[var(--accent-blue)]"
+                    disabled={isConnecting}
+                    className="w-full flex items-center gap-3 p-4 rounded-lg border transition-all hover:border-[var(--accent-blue)] disabled:opacity-60 disabled:cursor-not-allowed"
                     style={{ borderColor: 'var(--border)', background: 'transparent' }}>
                     <div className="p-2.5 rounded-lg" style={{ background: 'rgba(59,130,246,0.1)' }}>
-                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" style={{ color: 'var(--accent-blue)' }}>
-                        <path d="M5.463 4A3.463 3.463 0 0 0 2 7.463V16.537A3.463 3.463 0 0 0 5.463 20h13.074A3.463 3.463 0 0 0 22 16.537V7.463A3.463 3.463 0 0 0 18.537 4H5.463zM12 7.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9z" />
-                      </svg>
+                      {isConnecting ? (
+                        <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" style={{ color: 'var(--accent-blue)' }}>
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                        </svg>
+                      ) : (
+                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" style={{ color: 'var(--accent-blue)' }}>
+                          <path d="M5.463 4A3.463 3.463 0 0 0 2 7.463V16.537A3.463 3.463 0 0 0 5.463 20h13.074A3.463 3.463 0 0 0 22 16.537V7.463A3.463 3.463 0 0 0 18.537 4H5.463zM12 7.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9z" />
+                        </svg>
+                      )}
                     </div>
                     <div className="text-left">
-                      <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Connect BCH Wallet</div>
+                      <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                        {isConnecting ? 'Connecting...' : 'Connect BCH Wallet'}
+                      </div>
                       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>WalletConnect (Selene, Cashonize, etc.)</div>
                     </div>
                   </button>

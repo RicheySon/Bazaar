@@ -92,3 +92,78 @@ export function isValidBCHAddress(address: string): boolean {
   const prefixes = ['bchtest:', 'bitcoincash:', 'bchreg:'];
   return prefixes.some((p) => address.startsWith(p)) && address.length > 20;
 }
+
+// Base32 lowercase alphabet (RFC 4648 lowercase, used in CID multibase 'b' prefix)
+const BASE32_ALPHA = 'abcdefghijklmnopqrstuvwxyz234567';
+
+function decodeBase32Lower(str: string): Uint8Array {
+  const lookup: Record<string, number> = {};
+  for (let i = 0; i < BASE32_ALPHA.length; i++) {
+    lookup[BASE32_ALPHA[i]] = i;
+    lookup[BASE32_ALPHA[i].toUpperCase()] = i;
+  }
+  let value = 0, bits = 0;
+  const output: number[] = [];
+  for (const c of str) {
+    if (c === '=') break;
+    if (!(c in lookup)) throw new Error(`Invalid base32 char: ${c}`);
+    value = (value << 5) | lookup[c];
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      output.push((value >>> bits) & 0xff);
+    }
+  }
+  return new Uint8Array(output);
+}
+
+function encodeBase32Lower(bytes: Uint8Array): string {
+  let value = 0, bits = 0, output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      output += BASE32_ALPHA[(value >>> bits) & 31];
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHA[(value << (5 - bits)) & 31];
+  }
+  return output;
+}
+
+/**
+ * Encode a CIDv1 multibase string to binary hex for BCH NFT commitment storage.
+ * CIDv1 sha256 binary = 36 bytes = 72 hex chars (fits in the 40-byte BCH limit).
+ * Falls back to truncated UTF-8 for unrecognized strings.
+ */
+export function cidToCommitmentHex(cid: string): string {
+  try {
+    if (cid.startsWith('b') && cid.length > 1) {
+      const bytes = decodeBase32Lower(cid.slice(1));
+      return bytesToHex(bytes);
+    }
+  } catch {
+    // fall through to UTF-8 fallback
+  }
+  return bytesToHex(new TextEncoder().encode(cid).subarray(0, 40));
+}
+
+/**
+ * Decode a BCH NFT commitment hex string back to a CID.
+ * If 72 hex chars (36 bytes) starting with 0x01, treats it as binary CIDv1.
+ * Otherwise falls back to UTF-8 decoding (legacy format).
+ */
+export function commitmentHexToCid(hex: string): string {
+  if (!hex || !isHexString(hex)) return hex || '';
+  try {
+    const bytes = hexToBytes(hex);
+    if (bytes.length === 36 && bytes[0] === 0x01) {
+      return 'b' + encodeBase32Lower(bytes);
+    }
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return hex;
+  }
+}

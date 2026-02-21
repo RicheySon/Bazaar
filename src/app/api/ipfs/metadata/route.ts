@@ -5,6 +5,7 @@ export const runtime = 'nodejs';
 const PINATA_JWT = process.env.PINATA_JWT || '';
 const PINATA_GATEWAY = process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud';
 const PINATA_API = 'https://api.pinata.cloud';
+const PINATA_TIMEOUT_MS = Math.max(3000, parseInt(process.env.PINATA_TIMEOUT_MS || '20000'));
 
 export async function POST(request: Request) {
   if (!PINATA_JWT) {
@@ -17,6 +18,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Metadata requires name and image.' }, { status: 400 });
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PINATA_TIMEOUT_MS);
     const response = await fetch(`${PINATA_API}/pinning/pinJSONToIPFS`, {
       method: 'POST',
       headers: {
@@ -41,7 +44,8 @@ export async function POST(request: Request) {
           cidVersion: 1,
         },
       }),
-    });
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
 
     if (!response.ok) {
       const error = await response.text();
@@ -61,7 +65,10 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: false,
-        error: `Metadata upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        error:
+          error instanceof Error && error.name === 'AbortError'
+            ? `Pinata metadata upload timed out after ${PINATA_TIMEOUT_MS}ms`
+            : `Metadata upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       },
       { status: 500 }
     );
