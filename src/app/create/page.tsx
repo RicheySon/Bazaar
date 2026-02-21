@@ -4,12 +4,12 @@ import { useState, useRef } from 'react';
 import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 import {
   Upload, Image as ImageIcon, Video, X, Loader2, Check, ExternalLink,
-  Sparkles, Tag, Gavel, Percent, AlertCircle
+  Sparkles, Tag, Gavel, Percent, AlertCircle, Library
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
-import { buildWcMintParams, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
+import { buildWcMintParams, buildWcPrepTransaction, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
 import { getExplorerTxUrl, MARKETPLACE_CONFIG } from '@/lib/bch/config';
 import { bchToSatoshis } from '@/lib/utils';
 import { decodeCashAddress } from '@bitauth/libauth';
@@ -26,6 +26,8 @@ export default function CreatePage() {
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [collectionName, setCollectionName] = useState('');
+  const [mintAsCollection, setMintAsCollection] = useState(false);
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<MediaType>('image');
@@ -118,6 +120,7 @@ export default function CreatePage() {
           image: imageResult.ipfsUri,
           creator: wallet.address,
           royalty: royaltyPercent * 100,
+          collection: collectionName.trim() || undefined,
           attributes: attributes.filter((a) => a.trait_type && a.value),
         });
 
@@ -131,15 +134,70 @@ export default function CreatePage() {
         let mintResult;
 
         if (connectionType === 'walletconnect') {
+          // Check if the wallet has a genesis-capable UTXO (vout=0).
+          // If not, build and sign a self-send prep tx first.
+          try {
+            const utxoRes = await fetch(`/api/utxos?address=${encodeURIComponent(wallet.address)}`);
+            const utxoData = await utxoRes.json();
+            const allUtxos: Array<{ vout: number; token?: unknown }> = utxoData.utxos || [];
+            const hasGenesis = allUtxos.some(u => u.vout === 0 && !u.token);
+            if (!hasGenesis) {
+              const prepParams = await buildWcPrepTransaction(wallet.address);
+              if ('error' in prepParams) {
+                setError(prepParams.error);
+                setStep(0);
+                return;
+              }
+              const wcPrepRequest = wcPayloadMode === 'raw'
+                ? { transaction: prepParams.transaction, sourceOutputs: prepParams.sourceOutputs as any }
+                : { transaction: prepParams.transactionHex, sourceOutputs: prepParams.sourceOutputsJson as any };
+              const prepResult = await signTransaction({
+                ...wcPrepRequest,
+                broadcast: true,
+                userPrompt: prepParams.userPrompt,
+              });
+              if (!prepResult) {
+                setError('Wallet preparation was cancelled. Cannot mint without a genesis-capable UTXO.');
+                setStep(0);
+                return;
+              }
+              // Wait for the prep UTXO to appear
+              const prepTxid = prepResult.signedTransactionHash;
+              let prepConfirmed = false;
+              for (let i = 0; i < 12; i++) {
+                await new Promise(r => setTimeout(r, 2500));
+                const check = await fetch(`/api/utxos?address=${encodeURIComponent(wallet.address)}`);
+                const checkData = await check.json();
+                const checkUtxos: Array<{ txid: string; vout: number }> = checkData.utxos || [];
+                if (checkUtxos.some(u => u.txid === prepTxid && u.vout === 0)) {
+                  prepConfirmed = true;
+                  break;
+                }
+              }
+              if (!prepConfirmed) {
+                setError('Prep transaction not confirmed. Please try again.');
+                setStep(0);
+                return;
+              }
+            }
+          } catch (prepErr) {
+            // Non-fatal: let buildWcMintParams try and surface its own error if needed
+            if (wcDebug) console.warn('[Create] Genesis UTXO check failed:', prepErr);
+          }
+
           // WalletConnect Minting - build tx params, then sign via context
           const wcParams = await buildWcMintParams(
             wallet.address,
             metadataResult.ipfsHash,
-            { name: name.trim(), description: description.trim(), image: imageResult.ipfsUri }
+            { name: name.trim(), description: description.trim(), image: imageResult.ipfsUri },
+            mintAsCollection ? 'minting' : 'none'
           );
 
           if ('error' in wcParams) {
-            setError(wcParams.error);
+            const msg = wcParams.error === 'NO_GENESIS_UTXO'
+              ? 'No genesis-capable UTXO found. Please send a small BCH payment to yourself (any amount) from your wallet app, then try again.'
+              : wcParams.error;
+            setError(msg);
             setStep(0);
             return;
           }
@@ -215,6 +273,7 @@ export default function CreatePage() {
               address: walletData.address,
               tokenAddress: walletData.tokenAddress,
               commitment: metadataResult.ipfsHash,
+              capability: mintAsCollection ? 'minting' : 'none',
             }),
           });
           mintResult = await mintResponse.json();
@@ -450,7 +509,7 @@ export default function CreatePage() {
                       <ExternalLink className="h-3.5 w-3.5" /> View on Explorer
                     </a>
                   )}
-                  <button onClick={() => { setStep(0); setName(''); setDescription(''); removeMedia(); setPrice(''); setMinBid(''); setAttributes([]); setMintTxid(''); setListingTxid(''); }}
+                  <button onClick={() => { setStep(0); setName(''); setDescription(''); setCollectionName(''); setMintAsCollection(false); removeMedia(); setPrice(''); setMinBid(''); setAttributes([]); setMintTxid(''); setListingTxid(''); }}
                     className="btn-primary flex-1 text-xs">Create Another</button>
                 </div>
               </>
@@ -554,6 +613,41 @@ export default function CreatePage() {
               <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Description</label>
               <textarea value={description} onChange={(e) => setDescription(e.target.value)}
                 placeholder="Describe your NFT..." rows={3} className="input-field resize-none" maxLength={1000} />
+            </div>
+
+            {/* Collection */}
+            <div>
+              <label className="flex items-center gap-1.5 text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                <Library className="h-3.5 w-3.5" /> Collection <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+              </label>
+              <input type="text" value={collectionName} onChange={(e) => setCollectionName(e.target.value)}
+                placeholder="e.g. Chipnet Creatures" className="input-field" maxLength={100} />
+              <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Groups this NFT under a named collection in the marketplace
+              </p>
+            </div>
+
+            {/* Mint as Collection toggle */}
+            <div
+              onClick={() => setMintAsCollection(!mintAsCollection)}
+              className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all"
+              style={{
+                borderColor: mintAsCollection ? 'var(--accent)' : 'var(--border)',
+                background: mintAsCollection ? 'rgba(0,229,69,0.04)' : 'transparent',
+              }}
+            >
+              <div className={`w-4 h-4 mt-0.5 rounded border flex items-center justify-center shrink-0 transition-colors ${mintAsCollection ? 'border-[var(--accent)]' : 'border-[var(--text-muted)]'}`}
+                style={{ background: mintAsCollection ? 'var(--accent)' : 'transparent' }}>
+                {mintAsCollection && <Check className="h-3 w-3 text-black" />}
+              </div>
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Mint as Collection Token
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Creates a minting-capability NFT — use it to mint more items under the same token category (on-chain collection)
+                </div>
+              </div>
             </div>
 
             {/* Listing Type */}

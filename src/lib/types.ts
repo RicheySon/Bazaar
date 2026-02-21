@@ -7,6 +7,26 @@ export interface NFTMetadata {
   creator: string; // BCH address
   attributes?: NFTAttribute[];
   createdAt?: number;
+  collection?: string;       // Collection name (groups multiple NFTs)
+  collectionImage?: string;  // ipfs:// URI for collection thumbnail
+}
+
+export interface Collection {
+  slug: string;
+  name: string;
+  description?: string;
+  image?: string;          // ipfs:// URI for collection image
+  creatorAddress: string;
+  creatorPkh?: string;
+  tokenCategory?: string;  // Set when all items share the same tokenCategory (minting token model)
+  floorPrice: string;      // Satoshis string
+  totalVolume: string;     // Satoshis string
+  listedCount: number;
+  totalSupply: number;
+  ownerCount: number;
+  royaltyBasisPoints: number;
+  items: any[];
+  createdAt?: number;
 }
 
 export interface NFTAttribute {
@@ -63,6 +83,8 @@ export interface MintParams {
   imageFile: File;
   royaltyPercent: number;
   attributes?: NFTAttribute[];
+  collection?: string;
+  capability?: 'none' | 'mutable' | 'minting';
 }
 
 export interface ListingParams {

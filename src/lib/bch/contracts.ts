@@ -743,7 +743,8 @@ export async function claimAuction(
 export async function buildWcMintParams(
   address: string,
   commitment: string,
-  metadata: { name: string; description: string; image: string }
+  metadata: { name: string; description: string; image: string },
+  capability: 'none' | 'mutable' | 'minting' = 'none'
 ): Promise<{
   transactionHex: string;
   transaction: any;
@@ -772,7 +773,7 @@ export async function buildWcMintParams(
     const genesisInput = nonTokenUtxos.find(u => u.vout === 0);
     if (!genesisInput) {
       return {
-        error: 'No genesis-capable UTXO found (need a UTXO at output index 0). Try requesting BCH from the Chipnet faucet, or send a small amount to your address from another wallet.',
+        error: 'NO_GENESIS_UTXO',
       };
     }
     const category = genesisInput.txid;
@@ -836,7 +837,7 @@ export async function buildWcMintParams(
       .to(tokenAddress, 1000n, {
         category,
         amount: 0n,
-        nft: { capability: 'none', commitment: commitmentHex },
+        nft: { capability, commitment: commitmentHex },
       } as any)
       .withTime(0)
       .withHardcodedFee(fee)
@@ -877,11 +878,81 @@ export async function buildWcMintParams(
       sourceOutputs,
       sourceOutputsJson,
       category,
-      userPrompt: `Mint NFT: ${metadata.name}`,
+      userPrompt: capability === 'minting' ? `Create Collection: ${metadata.name}` : `Mint NFT: ${metadata.name}`,
     };
   } catch (error) {
     console.error('[WC Mint] buildWcMintParams error:', error);
     return { error: error instanceof Error ? error.message : 'Failed to build transaction' };
+  }
+}
+
+// Build a prep transaction that creates a genesis-capable UTXO (vout=0).
+// Needed when the wallet has no UTXO at output-index 0, which is required by
+// the BCH CashTokens protocol for genesis minting.
+export async function buildWcPrepTransaction(address: string): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  sourceOutputsJson: object[];
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const utxos = await getUtxos(address);
+    const nonTokenUtxos = utxos.filter(u => !u.token);
+    if (nonTokenUtxos.length === 0) {
+      return { error: 'No BCH UTXOs available. Please fund your wallet from the Chipnet faucet.' };
+    }
+
+    const sorted = [...nonTokenUtxos].sort((a, b) => Number(b.satoshis - a.satoshis));
+    const input = sorted[0];
+    if (input.satoshis < 1200n) {
+      return { error: 'Insufficient funds to prepare wallet for minting.' };
+    }
+
+    const decoded = decodeCashAddress(address);
+    if (typeof decoded === 'string') return { error: 'Invalid address: ' + decoded };
+    const userPkhHex = Buffer.from(decoded.payload).toString('hex');
+    const userLockingBytecode = getLockingBytecode(address);
+    const userContract = buildP2PKHContract(userPkhHex);
+
+    const dummyKey = new Uint8Array(32);
+    dummyKey[31] = 1;
+    const dummyTemplate = new SignatureTemplate(dummyKey);
+    const dummyPk = dummyTemplate.getPublicKey();
+
+    const fee = 400n;
+    const outputAmount = input.satoshis - fee;
+
+    // Single output at vout=0 — this UTXO becomes genesis-capable for the next mint tx.
+    const tx = userContract.functions.spend(dummyPk, dummyTemplate)
+      .fromP2PKH([input], dummyTemplate)
+      .to(address, outputAmount)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    const rawHex = await tx.build();
+    const decodedTx = decodeTransaction(hexToBin(rawHex));
+    if (typeof decodedTx === 'string') return { error: 'Failed to decode prep transaction: ' + decodedTx };
+    decodedTx.inputs.forEach(inp => { inp.unlockingBytecode = new Uint8Array(); });
+    const transactionHex = binToHex(encodeTransaction(decodedTx));
+
+    const sourceOutputs = [{
+      ...decodedTx.inputs[0],
+      lockingBytecode: userLockingBytecode,
+      valueSatoshis: input.satoshis,
+    }];
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
+
+    return {
+      transactionHex,
+      transaction: decodedTx,
+      sourceOutputs,
+      sourceOutputsJson,
+      userPrompt: 'Prepare wallet for NFT minting (one-time setup)',
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Failed to build prep transaction' };
   }
 }
 
@@ -1593,6 +1664,7 @@ export async function mintNFT(
   address: string,        // P2PKH funding address (where BCH lives)
   tokenAddress: string,   // token-capable address (z… prefix) for NFT output
   commitment: string,     // IPFS CID or arbitrary UTF-8 string (truncated to 40 bytes)
+  capability: 'none' | 'mutable' | 'minting' = 'none',
 ): Promise<TransactionResult> {
   try {
     // CashTokens genesis: the token category = txid of the genesis input.
@@ -1608,31 +1680,57 @@ export async function mintNFT(
     }
 
     // Find a UTXO with vout=0 — required by BCH CashTokens spec for genesis minting.
-    const nonTokenUtxos = utxos.filter(u => !u.token);
-    const genesisInput = nonTokenUtxos.find(u => u.vout === 0);
+    let nonTokenUtxos = utxos.filter(u => !u.token);
+    let genesisInput = nonTokenUtxos.find(u => u.vout === 0);
+
+    const signatureTemplate = new SignatureTemplate(privateKey);
+    const pk = signatureTemplate.getPublicKey();
+    const outputAddress = tokenAddress || address;
 
     if (!genesisInput) {
-      return {
-        success: false,
-        error: 'No genesis-capable UTXO found (need a UTXO at output index 0). Try requesting BCH from the faucet again, or send a small amount to your address from another wallet.',
-      };
+      // Auto-prep: create a self-send transaction to produce a fresh vout=0 UTXO.
+      // This is needed when all UTXOs came back as change (vout>=1) from prior transactions.
+      const sorted = [...nonTokenUtxos].sort((a, b) => Number(b.satoshis - a.satoshis));
+      if (sorted.length === 0 || sorted[0].satoshis < 1200n) {
+        return {
+          success: false,
+          error: 'No genesis-capable UTXO and insufficient funds to create one. Please fund your wallet from the Chipnet faucet.',
+        };
+      }
+      const prepInput = sorted[0];
+      const prepFee = 400n;
+      const prepTx = userContract.functions.spend(pk, signatureTemplate)
+        .fromP2PKH([prepInput], signatureTemplate)
+        .to(address, prepInput.satoshis - prepFee) // Single output → becomes vout=0
+        .withTime(0)
+        .withHardcodedFee(prepFee)
+        .withoutChange();
+      const prepHex = await prepTx.build();
+      const prepTxid = await getProvider().sendRawTransaction(prepHex);
+
+      // Poll for the new vout=0 UTXO to appear in the mempool (up to ~15s)
+      let freshUtxos: Utxo[] = [];
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        freshUtxos = await getUtxos(address);
+        genesisInput = freshUtxos.find(u => u.txid === prepTxid && u.vout === 0 && !u.token) ?? undefined;
+        if (genesisInput) break;
+      }
+      if (!genesisInput) {
+        return { success: false, error: 'Prep transaction not confirmed in time. Please try again.' };
+      }
+      nonTokenUtxos = freshUtxos.filter(u => !u.token);
     }
 
-    // The token category = txid of the first input (the genesis input).
+    // The token category = txid of the genesis input.
     const category = genesisInput.txid;
 
     // Encode CIDv1 as binary bytes (36 bytes = 72 hex chars, fits in 40-byte BCH limit).
     const commitmentHex = cidToCommitmentHex(commitment);
 
-    const signatureTemplate = new SignatureTemplate(privateKey);
-    const pk = signatureTemplate.getPublicKey();
-
-    // Send the newly minted NFT to the token-capable address (z… prefix).
-    const outputAddress = tokenAddress || address;
-
     // Build input list: genesis input first (required), then other BCH UTXOs for fees.
     const otherUtxos = nonTokenUtxos
-      .filter(u => !(u.txid === genesisInput.txid && u.vout === genesisInput.vout))
+      .filter(u => !(u.txid === genesisInput!.txid && u.vout === genesisInput!.vout))
       .sort((a, b) => Number(b.satoshis - a.satoshis));
 
     const allFundingUtxos: Utxo[] = [genesisInput];
@@ -1661,7 +1759,7 @@ export async function mintNFT(
       .to(outputAddress, nftOutputSats, {
         category: category,
         amount: 0n,
-        nft: { capability: 'none', commitment: commitmentHex },
+        nft: { capability, commitment: commitmentHex },
       } as any)
       .withTime(0)
       .withHardcodedFee(fee)

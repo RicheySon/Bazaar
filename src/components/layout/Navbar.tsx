@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   Wallet, Menu, X, ChevronDown, Search, TrendingUp, LayoutGrid,
   Activity, Rocket, Layers, PlusCircle, Code2, BookOpen, Terminal, Key, User,
-  LogOut
+  LogOut, Library
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { WalletModal } from '@/components/wallet/WalletModal';
@@ -34,6 +34,7 @@ const navSections: NavSection[] = [
     items: [
       { href: '/', label: 'Trending', icon: TrendingUp, description: 'Top collections by volume' },
       { href: '/explore', label: 'Explore', icon: LayoutGrid, description: 'Browse all NFTs' },
+      { href: '/collections', label: 'Collections', icon: Library, description: 'Browse NFT collections' },
       { href: '/activity', label: 'Activity', icon: Activity, description: 'Live transaction feed' },
     ],
   },

@@ -7,15 +7,17 @@ import { mintNFT } from '@/lib/bch/contracts';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { privateKeyHex, pkh, address, tokenAddress, commitment } = body;
+    const { privateKeyHex, pkh, address, tokenAddress, commitment, capability } = body;
 
     if (!privateKeyHex || !pkh || !address || !commitment) {
       return NextResponse.json({ error: 'Missing required fields: privateKeyHex, pkh, address, commitment' }, { status: 400 });
     }
 
     const privateKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
+    const nftCapability: 'none' | 'mutable' | 'minting' =
+      capability === 'minting' ? 'minting' : capability === 'mutable' ? 'mutable' : 'none';
 
-    const result = await mintNFT(privateKey, pkh, address, tokenAddress || address, commitment);
+    const result = await mintNFT(privateKey, pkh, address, tokenAddress || address, commitment, nftCapability);
 
     return NextResponse.json(result);
   } catch (err) {

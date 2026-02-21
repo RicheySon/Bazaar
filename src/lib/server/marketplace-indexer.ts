@@ -51,7 +51,18 @@ async function enrichMetadata(commitmentHex: string) {
     creator: (data.creator as string) || '',
     attributes: (data.attributes as Array<{ trait_type: string; value: string }>) || [],
     createdAt: (data.createdAt as number) || Date.now(),
+    collection: (data.collection as string) || '',
+    collectionImage: (data.collectionImage as string) || '',
   };
+}
+
+function makeSlug(name: string): string {
+  return name.toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'unnamed';
 }
 
 function toSatoshisString(value: string | number | bigint | undefined): string {
@@ -485,4 +496,100 @@ export async function getListingById(id: string) {
   if (listing) return listing;
   const auction = data.auctions.find((a: any) => a.txid === id);
   return auction || null;
+}
+
+export async function getCollectionsData() {
+  const data = await getMarketplaceData();
+  const allItems: any[] = [...data.listings, ...data.auctions];
+
+  type CollEntry = {
+    name: string;
+    slug: string;
+    image: string;
+    creatorAddress: string;
+    creatorPkh: string;
+    sharedCategory: string | undefined; // set when all items share same tokenCategory
+    floorPrice: bigint;
+    totalVolume: bigint;
+    listedCount: number;
+    supply: number;
+    owners: Set<string>;
+    royaltyBasisPoints: number;
+    items: any[];
+    createdAt: number;
+  };
+
+  const collectionsMap = new Map<string, CollEntry>();
+
+  for (const item of allItems) {
+    // Determine collection identity:
+    // 1. metadata.collection field (explicit collection name)
+    // 2. tokenCategory (if multiple items already share it — minting model)
+    const collName =
+      item.metadata?.collection?.trim() ||
+      item.metadata?.name ||
+      `Token #${item.tokenCategory?.slice(0, 8)}`;
+    const slug = makeSlug(collName);
+
+    const itemPrice = BigInt(item.price ?? item.minBid ?? item.currentBid ?? 0);
+
+    if (!collectionsMap.has(slug)) {
+      collectionsMap.set(slug, {
+        name: collName,
+        slug,
+        image: item.metadata?.collectionImage || item.metadata?.image || '',
+        creatorAddress: item.creator || item.seller || '',
+        creatorPkh: item.creatorPkh || '',
+        sharedCategory: item.tokenCategory,
+        floorPrice: item.status === 'active' ? itemPrice : BigInt(Number.MAX_SAFE_INTEGER),
+        totalVolume: item.status === 'sold' ? itemPrice : 0n,
+        listedCount: item.status === 'active' ? 1 : 0,
+        supply: 1,
+        owners: new Set([item.seller || '']),
+        royaltyBasisPoints: item.royaltyBasisPoints ?? 0,
+        items: [item],
+        createdAt: item.createdAt ?? Date.now(),
+      });
+    } else {
+      const col = collectionsMap.get(slug)!;
+      col.supply++;
+      col.items.push(item);
+      col.owners.add(item.seller || '');
+      if (item.status === 'active') {
+        col.listedCount++;
+        if (itemPrice < col.floorPrice) col.floorPrice = itemPrice;
+      }
+      if (item.status === 'sold') {
+        col.totalVolume += itemPrice;
+      }
+      // Track shared tokenCategory for minting-model collections
+      if (col.sharedCategory !== item.tokenCategory) col.sharedCategory = undefined;
+      // Use collectionImage if available
+      if (!col.image && item.metadata?.image) col.image = item.metadata.image;
+    }
+  }
+
+  return Array.from(collectionsMap.values())
+    .sort((a, b) => Number(b.totalVolume - a.totalVolume) || b.listedCount - a.listedCount)
+    .map((col) => ({
+      slug: col.slug,
+      name: col.name,
+      image: col.image || '',
+      creatorAddress: col.creatorAddress,
+      creatorPkh: col.creatorPkh,
+      tokenCategory: col.sharedCategory,
+      floorPrice: col.floorPrice === BigInt(Number.MAX_SAFE_INTEGER) ? '0' : col.floorPrice.toString(),
+      totalVolume: col.totalVolume.toString(),
+      listedCount: col.listedCount,
+      totalSupply: col.supply,
+      ownerCount: col.owners.size,
+      royaltyBasisPoints: col.royaltyBasisPoints,
+      items: col.items,
+      createdAt: col.createdAt,
+    }));
+}
+
+export async function getCollectionBySlug(slug: string) {
+  const collections = await getCollectionsData();
+  return collections.find((c) => c.slug === slug) || null;
 }
