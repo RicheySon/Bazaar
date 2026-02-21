@@ -956,6 +956,216 @@ export async function buildWcPrepTransaction(address: string): Promise<{
   }
 }
 
+export interface MintingTokenUtxo {
+  txid: string;
+  vout: number;
+  satoshis: bigint;
+  category: string;
+  commitment: string; // hex-encoded commitment stored on-chain
+}
+
+// Mint a new child NFT from an existing minting-capability token (server-side).
+// The minting token is returned to tokenAddress and a new child NFT is also minted there.
+export async function mintFromCollection(
+  privateKey: Uint8Array,
+  pkh: string,
+  address: string,
+  tokenAddress: string,
+  mintingToken: MintingTokenUtxo,
+  newCommitment: string,          // IPFS CID for the new child NFT
+  newCapability: 'none' | 'mutable' = 'none',
+): Promise<TransactionResult> {
+  try {
+    const userContract = buildP2PKHContract(pkh);
+    const signatureTemplate = new SignatureTemplate(privateKey);
+    const pk = signatureTemplate.getPublicKey();
+    const outputAddress = tokenAddress || address;
+
+    // Gather BCH UTXOs for fees (exclude the minting token UTXO itself)
+    const allUtxos = await getUtxos(address);
+    const feeUtxos = allUtxos
+      .filter(u => !u.token && !(u.txid === mintingToken.txid && u.vout === mintingToken.vout))
+      .sort((a, b) => Number(b.satoshis - a.satoshis));
+
+    const mintingTokenInput: Utxo = {
+      txid: mintingToken.txid,
+      vout: mintingToken.vout,
+      satoshis: mintingToken.satoshis,
+      token: {
+        amount: 0n,
+        category: mintingToken.category,
+        nft: { capability: 'minting', commitment: mintingToken.commitment },
+      },
+    };
+
+    // Pick enough fee UTXOs
+    const selectedFeeUtxos: Utxo[] = [];
+    let feeSats = 0n;
+    for (const u of feeUtxos) {
+      if (feeSats >= 4000n) break;
+      selectedFeeUtxos.push(u);
+      feeSats += u.satoshis;
+    }
+    if (feeSats < 1000n && mintingToken.satoshis < 3000n) {
+      return { success: false, error: 'Insufficient BCH to cover minting fee.' };
+    }
+
+    const newCommitmentHex = cidToCommitmentHex(newCommitment);
+    const nftOutputSats = 1000n;
+    const totalIn = mintingToken.satoshis + feeSats;
+    const fee = BigInt(Math.max(600, (selectedFeeUtxos.length + 1) * 148 + 300));
+    const change = totalIn - nftOutputSats * 2n - fee;
+
+    const allInputs: Utxo[] = [mintingTokenInput, ...selectedFeeUtxos];
+    const tx = userContract.functions.spend(pk, signatureTemplate)
+      .fromP2PKH(allInputs, signatureTemplate)
+      // Return minting token to owner (same category, capability='minting', same commitment)
+      .to(outputAddress, nftOutputSats, {
+        category: mintingToken.category,
+        amount: 0n,
+        nft: { capability: 'minting', commitment: mintingToken.commitment },
+      } as any)
+      // New child NFT (same category, new commitment)
+      .to(outputAddress, nftOutputSats, {
+        category: mintingToken.category,
+        amount: 0n,
+        nft: { capability: newCapability, commitment: newCommitmentHex },
+      } as any)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    if (change > 546n) {
+      tx.to(address, change);
+    }
+
+    const rawHex = await tx.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+    return { success: true, txid, tokenCategory: mintingToken.category };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to mint from collection' };
+  }
+}
+
+// Build WalletConnect params for minting a child NFT from an existing minting token.
+export async function buildWcMintFromCollectionParams(
+  address: string,
+  mintingToken: MintingTokenUtxo,
+  newCommitment: string,
+  metadata: { name: string; collectionName: string },
+  newCapability: 'none' | 'mutable' = 'none',
+): Promise<{
+  transactionHex: string;
+  transaction: any;
+  sourceOutputs: object[];
+  sourceOutputsJson: object[];
+  category: string;
+  userPrompt: string;
+} | { error: string }> {
+  try {
+    const decoded = decodeCashAddress(address);
+    if (typeof decoded === 'string') return { error: 'Invalid address: ' + decoded };
+    const userPkhHex = Buffer.from(decoded.payload).toString('hex');
+
+    const tokenAddrResult = lockingBytecodeToCashAddress({
+      bytecode: getLockingBytecode(address),
+      prefix: decoded.prefix,
+      tokenSupport: true,
+    });
+    if (typeof tokenAddrResult === 'string') return { error: 'Failed to derive token address: ' + tokenAddrResult };
+    const tokenAddress = tokenAddrResult.address;
+
+    const userLockingBytecode = getLockingBytecode(address);
+    const userContract = buildP2PKHContract(userPkhHex);
+
+    const dummyKey = new Uint8Array(32);
+    dummyKey[31] = 1;
+    const dummyTemplate = new SignatureTemplate(dummyKey);
+    const dummyPk = dummyTemplate.getPublicKey();
+
+    // Gather fee UTXOs from the user's BCH address
+    const allUtxos = await getUtxos(address);
+    const feeUtxos = allUtxos
+      .filter(u => !u.token)
+      .sort((a, b) => Number(b.satoshis - a.satoshis));
+
+    const mintingTokenInput: Utxo = {
+      txid: mintingToken.txid,
+      vout: mintingToken.vout,
+      satoshis: mintingToken.satoshis,
+      token: {
+        amount: 0n,
+        category: mintingToken.category,
+        nft: { capability: 'minting', commitment: mintingToken.commitment },
+      },
+    };
+
+    const selectedFeeUtxos: Utxo[] = [];
+    let feeSats = 0n;
+    for (const u of feeUtxos) {
+      if (feeSats >= 4000n) break;
+      selectedFeeUtxos.push(u);
+      feeSats += u.satoshis;
+    }
+    if (feeSats < 1000n && mintingToken.satoshis < 3000n) {
+      return { error: 'Insufficient BCH to cover minting fee.' };
+    }
+
+    const newCommitmentHex = cidToCommitmentHex(newCommitment);
+    const nftOutputSats = 1000n;
+    const totalIn = mintingToken.satoshis + feeSats;
+    const fee = BigInt(Math.max(600, (selectedFeeUtxos.length + 1) * 148 + 300));
+    const change = totalIn - nftOutputSats * 2n - fee;
+
+    const allInputs: Utxo[] = [mintingTokenInput, ...selectedFeeUtxos];
+    const wcTx = userContract.functions.spend(dummyPk, dummyTemplate)
+      .fromP2PKH(allInputs, dummyTemplate)
+      .to(tokenAddress, nftOutputSats, {
+        category: mintingToken.category,
+        amount: 0n,
+        nft: { capability: 'minting', commitment: mintingToken.commitment },
+      } as any)
+      .to(tokenAddress, nftOutputSats, {
+        category: mintingToken.category,
+        amount: 0n,
+        nft: { capability: newCapability, commitment: newCommitmentHex },
+      } as any)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+    if (change > 546n) {
+      wcTx.to(address, change);
+    }
+
+    const rawHex = await wcTx.build();
+    const decodedTx = decodeTransaction(hexToBin(rawHex));
+    if (typeof decodedTx === 'string') return { error: 'Failed to decode transaction: ' + decodedTx };
+    decodedTx.inputs.forEach(inp => { inp.unlockingBytecode = new Uint8Array(); });
+    const transactionHex = binToHex(encodeTransaction(decodedTx));
+
+    // sourceOutputs: minting token input uses token-capable locking bytecode
+    const mintingTokenLockingBytecode = getLockingBytecode(tokenAddress);
+    const sourceOutputs = allInputs.map((utxo, i) => ({
+      ...decodedTx.inputs[i],
+      lockingBytecode: utxo.token ? mintingTokenLockingBytecode : userLockingBytecode,
+      valueSatoshis: utxo.satoshis,
+      token: utxo.token ?? undefined,
+    }));
+    const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
+
+    return {
+      transactionHex,
+      transaction: decodedTx,
+      sourceOutputs,
+      sourceOutputsJson,
+      category: mintingToken.category,
+      userPrompt: `Add to "${metadata.collectionName}": ${metadata.name}`,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Failed to build mint-from-collection transaction' };
+  }
+}
+
 // Build WalletConnect listing params (fixed or auction)
 export async function buildWcListingParams(params: {
   address: string;

@@ -1,18 +1,23 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
 import {
   Upload, Image as ImageIcon, Video, X, Loader2, Check, ExternalLink,
-  Sparkles, Tag, Gavel, Percent, AlertCircle, Library
+  Sparkles, Tag, Gavel, Percent, AlertCircle, Library, ChevronDown
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { uploadFileToPinata, uploadMetadataToPinata, isPinataConfigured } from '@/lib/ipfs/pinata';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
-import { buildWcMintParams, buildWcPrepTransaction, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
+import { buildWcMintParams, buildWcPrepTransaction, buildWcMintFromCollectionParams, buildMarketplaceContract, buildAuctionContract, buildWcListingParams, getTokenUtxos } from '@/lib/bch/contracts';
+import type { MintingTokenUtxo } from '@/lib/bch/contracts';
 import { getExplorerTxUrl, MARKETPLACE_CONFIG } from '@/lib/bch/config';
-import { bchToSatoshis } from '@/lib/utils';
+import { bchToSatoshis, commitmentHexToCid, shortenAddress } from '@/lib/utils';
 import { decodeCashAddress } from '@bitauth/libauth';
+
+interface MintingTokenInfo extends MintingTokenUtxo {
+  collectionName: string;
+}
 
 type ListingMode = 'fixed' | 'auction';
 type MediaType = 'image' | 'video';
@@ -28,6 +33,10 @@ export default function CreatePage() {
   const [description, setDescription] = useState('');
   const [collectionName, setCollectionName] = useState('');
   const [mintAsCollection, setMintAsCollection] = useState(false);
+  const [addToCollection, setAddToCollection] = useState(false);
+  const [mintingTokens, setMintingTokens] = useState<MintingTokenInfo[]>([]);
+  const [selectedMintingToken, setSelectedMintingToken] = useState<MintingTokenInfo | null>(null);
+  const [loadingMintingTokens, setLoadingMintingTokens] = useState(false);
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<MediaType>('image');
@@ -43,11 +52,16 @@ export default function CreatePage() {
   const [listingTxid, setListingTxid] = useState('');
   const [error, setError] = useState('');
 
-  const waitForTokenUtxo = async (address: string, tokenCategory: string) => {
+  const waitForTokenUtxo = async (address: string, tokenCategory: string, fromTxid?: string) => {
     for (let i = 0; i < 12; i++) {
       const tokenUtxos = await getTokenUtxos(address);
-      const utxo = tokenUtxos.find((u) => u.token?.category === tokenCategory);
-      if (utxo && utxo.token?.nft) return utxo;
+      const utxo = tokenUtxos.find((u) =>
+        u.token?.category === tokenCategory &&
+        u.token?.nft &&
+        u.token.nft.capability !== 'minting' &&
+        (!fromTxid || u.txid === fromTxid)
+      );
+      if (utxo) return utxo;
       await new Promise((r) => setTimeout(r, 2500));
     }
     return null;
@@ -84,6 +98,51 @@ export default function CreatePage() {
 
   const removeAttribute = (index: number) => setAttributes(attributes.filter((_, i) => i !== index));
 
+  // Load minting-capability tokens from the user's wallet
+  useEffect(() => {
+    if (!wallet?.isConnected) { setMintingTokens([]); return; }
+    const pollAddress = connectionType !== 'walletconnect' && wallet.tokenAddress
+      ? wallet.tokenAddress : wallet.address;
+
+    setLoadingMintingTokens(true);
+    getTokenUtxos(pollAddress).then(async (utxos) => {
+      const minting = utxos.filter(u => u.token?.nft?.capability === 'minting');
+      const infos: MintingTokenInfo[] = await Promise.all(
+        minting.map(async (u) => {
+          const commitment = u.token!.nft!.commitment || '';
+          let collectionName = shortenAddress(u.token!.category, 6);
+          try {
+            const cid = commitmentHexToCid(commitment);
+            if (cid) {
+              const res = await fetch(`/api/ipfs/metadata`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                // We abuse the metadata route here just to resolve the CID name
+              }).catch(() => null);
+              // Directly fetch IPFS metadata via pinata gateway
+              const gateway = process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud';
+              const metaRes = await fetch(`${gateway}/ipfs/${cid}`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+              if (metaRes?.ok) {
+                const meta = await metaRes.json().catch(() => null);
+                if (meta?.collection) collectionName = meta.collection;
+                else if (meta?.name) collectionName = meta.name;
+              }
+            }
+          } catch { /* use shortened category */ }
+          return {
+            txid: u.txid,
+            vout: u.vout,
+            satoshis: u.satoshis,
+            category: u.token!.category,
+            commitment,
+            collectionName,
+          };
+        })
+      );
+      setMintingTokens(infos);
+    }).catch(() => setMintingTokens([])).finally(() => setLoadingMintingTokens(false));
+  }, [wallet?.isConnected, wallet?.address]);
+
   const handleSubmit = async () => {
     if (!wallet?.isConnected) { setModalOpen(true); return; }
 
@@ -114,13 +173,17 @@ export default function CreatePage() {
           setStep(0); return;
         }
 
+        const effectiveCollection = addToCollection && selectedMintingToken
+          ? selectedMintingToken.collectionName
+          : collectionName.trim() || undefined;
+
         const metadataResult = await uploadMetadataToPinata({
           name: name.trim(),
           description: description.trim(),
           image: imageResult.ipfsUri,
           creator: wallet.address,
           royalty: royaltyPercent * 100,
-          collection: collectionName.trim() || undefined,
+          collection: effectiveCollection,
           attributes: attributes.filter((a) => a.trait_type && a.value),
         });
 
@@ -129,11 +192,63 @@ export default function CreatePage() {
           setStep(0); return;
         }
 
+        // Validate minting token selection
+        if (addToCollection && !selectedMintingToken) {
+          setError('Please select a collection to add this NFT to.');
+          setStep(0); return;
+        }
+
         setStep(2);
 
         let mintResult;
 
-        if (connectionType === 'walletconnect') {
+        // ── Mint from existing collection (minting token fan-out) ────────────
+        if (addToCollection && selectedMintingToken) {
+          if (connectionType === 'walletconnect') {
+            const wcParams = await buildWcMintFromCollectionParams(
+              wallet.address,
+              selectedMintingToken,
+              metadataResult.ipfsHash,
+              { name: name.trim(), collectionName: selectedMintingToken.collectionName },
+            );
+            if ('error' in wcParams) { setError(wcParams.error); setStep(0); return; }
+            const wcReq = wcPayloadMode === 'raw'
+              ? { transaction: wcParams.transaction, sourceOutputs: wcParams.sourceOutputs as any }
+              : { transaction: wcParams.transactionHex, sourceOutputs: wcParams.sourceOutputsJson as any };
+            try {
+              const signResult = await signTransaction({ ...wcReq, broadcast: true, userPrompt: wcParams.userPrompt });
+              if (!signResult) { mintResult = { success: false, error: 'Signing rejected by wallet.' }; }
+              else { mintResult = { success: true, txid: signResult.signedTransactionHash, tokenCategory: wcParams.category }; }
+            } catch (e: unknown) {
+              mintResult = { success: false, error: e instanceof Error ? e.message : 'Wallet did not respond.' };
+            }
+          } else {
+            const walletData = loadWallet();
+            if (!walletData) { setError('Wallet not found.'); setStep(0); return; }
+            const mintResponse = await fetch('/api/mint-from-collection', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                privateKeyHex: Buffer.from(walletData.privateKey).toString('hex'),
+                pkh: getPkhHex(walletData),
+                address: walletData.address,
+                tokenAddress: walletData.tokenAddress,
+                mintingToken: {
+                  txid: selectedMintingToken.txid,
+                  vout: selectedMintingToken.vout,
+                  satoshis: selectedMintingToken.satoshis.toString(),
+                  category: selectedMintingToken.category,
+                  commitment: selectedMintingToken.commitment,
+                },
+                newCommitment: metadataResult.ipfsHash,
+              }),
+            });
+            mintResult = await mintResponse.json();
+          }
+        }
+
+        // ── Standard genesis mint ─────────────────────────────────────────────
+        else if (connectionType === 'walletconnect') {
           // Check if the wallet has a genesis-capable UTXO (vout=0).
           // If not, build and sign a self-send prep tx first.
           try {
@@ -288,7 +403,10 @@ export default function CreatePage() {
         const pollAddress = connectionType !== 'walletconnect' && wallet.tokenAddress
           ? wallet.tokenAddress
           : wallet.address;
-        const nftUtxo = await waitForTokenUtxo(pollAddress, tokenCategory);
+        // When minting from collection, filter by txid so we get the child NFT, not the minting token
+        const nftUtxo = await waitForTokenUtxo(
+          pollAddress, tokenCategory, addToCollection ? (mintResult.txid || undefined) : undefined
+        );
         if (!nftUtxo || !nftUtxo.token?.nft) {
           setError('NFT not found in wallet yet. Please refresh and try listing again.');
           setStep(0);
@@ -509,7 +627,7 @@ export default function CreatePage() {
                       <ExternalLink className="h-3.5 w-3.5" /> View on Explorer
                     </a>
                   )}
-                  <button onClick={() => { setStep(0); setName(''); setDescription(''); setCollectionName(''); setMintAsCollection(false); removeMedia(); setPrice(''); setMinBid(''); setAttributes([]); setMintTxid(''); setListingTxid(''); }}
+                  <button onClick={() => { setStep(0); setName(''); setDescription(''); setCollectionName(''); setMintAsCollection(false); setAddToCollection(false); setSelectedMintingToken(null); removeMedia(); setPrice(''); setMinBid(''); setAttributes([]); setMintTxid(''); setListingTxid(''); }}
                     className="btn-primary flex-1 text-xs">Create Another</button>
                 </div>
               </>
@@ -627,28 +745,95 @@ export default function CreatePage() {
               </p>
             </div>
 
-            {/* Mint as Collection toggle */}
-            <div
-              onClick={() => setMintAsCollection(!mintAsCollection)}
-              className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all"
-              style={{
-                borderColor: mintAsCollection ? 'var(--accent)' : 'var(--border)',
-                background: mintAsCollection ? 'rgba(0,229,69,0.04)' : 'transparent',
-              }}
-            >
-              <div className={`w-4 h-4 mt-0.5 rounded border flex items-center justify-center shrink-0 transition-colors ${mintAsCollection ? 'border-[var(--accent)]' : 'border-[var(--text-muted)]'}`}
-                style={{ background: mintAsCollection ? 'var(--accent)' : 'transparent' }}>
-                {mintAsCollection && <Check className="h-3 w-3 text-black" />}
+            {/* Mint as Collection toggle — hidden when adding to existing collection */}
+            {!addToCollection && (
+              <div
+                onClick={() => setMintAsCollection(!mintAsCollection)}
+                className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all"
+                style={{
+                  borderColor: mintAsCollection ? 'var(--accent)' : 'var(--border)',
+                  background: mintAsCollection ? 'rgba(0,229,69,0.04)' : 'transparent',
+                }}
+              >
+                <div className={`w-4 h-4 mt-0.5 rounded border flex items-center justify-center shrink-0 transition-colors ${mintAsCollection ? 'border-[var(--accent)]' : 'border-[var(--text-muted)]'}`}
+                  style={{ background: mintAsCollection ? 'var(--accent)' : 'transparent' }}>
+                  {mintAsCollection && <Check className="h-3 w-3 text-black" />}
+                </div>
+                <div>
+                  <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                    Mint as Collection Token
+                  </div>
+                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    Creates a minting-capability NFT — use it to mint more items under the same token category (on-chain collection)
+                  </div>
+                </div>
               </div>
+            )}
+
+            {/* Add to existing on-chain collection */}
+            {wallet?.isConnected && (loadingMintingTokens || mintingTokens.length > 0) && (
               <div>
-                <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-                  Mint as Collection Token
+                <div
+                  onClick={() => { setAddToCollection(!addToCollection); setSelectedMintingToken(null); setMintAsCollection(false); }}
+                  className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all"
+                  style={{
+                    borderColor: addToCollection ? 'var(--accent-blue)' : 'var(--border)',
+                    background: addToCollection ? 'rgba(59,130,246,0.05)' : 'transparent',
+                  }}
+                >
+                  <div className={`w-4 h-4 mt-0.5 rounded border flex items-center justify-center shrink-0 transition-colors`}
+                    style={{
+                      borderColor: addToCollection ? 'var(--accent-blue)' : 'var(--text-muted)',
+                      background: addToCollection ? 'var(--accent-blue)' : 'transparent',
+                    }}>
+                    {addToCollection && <Check className="h-3 w-3 text-white" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                      Add to existing on-chain collection
+                    </div>
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {loadingMintingTokens
+                        ? 'Loading your collections...'
+                        : `Mint under an existing minting token (${mintingTokens.length} available)`}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Creates a minting-capability NFT — use it to mint more items under the same token category (on-chain collection)
-                </div>
+
+                {addToCollection && mintingTokens.length > 0 && (
+                  <div className="mt-2">
+                    <label className="block text-[11px] font-medium mb-1.5" style={{ color: 'var(--text-muted)' }}>
+                      Select collection
+                    </label>
+                    <div className="space-y-1.5">
+                      {mintingTokens.map((token) => (
+                        <button
+                          key={token.category}
+                          onClick={() => setSelectedMintingToken(token)}
+                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-all"
+                          style={{
+                            borderColor: selectedMintingToken?.category === token.category ? 'var(--accent-blue)' : 'var(--border)',
+                            background: selectedMintingToken?.category === token.category ? 'rgba(59,130,246,0.08)' : 'var(--bg-secondary)',
+                          }}
+                        >
+                          <div className="w-7 h-7 rounded shrink-0 flex items-center justify-center text-[10px] font-bold"
+                            style={{ background: 'var(--bg-hover)', color: 'var(--accent-blue)' }}>
+                            {token.collectionName.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{token.collectionName}</div>
+                            <div className="text-[10px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>{token.category.slice(0, 16)}…</div>
+                          </div>
+                          {selectedMintingToken?.category === token.category && (
+                            <Check className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
 
             {/* Listing Type */}
             <div>
