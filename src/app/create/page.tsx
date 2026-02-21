@@ -48,6 +48,7 @@ export default function CreatePage() {
   const [attributes, setAttributes] = useState<Array<{ trait_type: string; value: string }>>([]);
 
   const [step, setStep] = useState(0);
+  const [stepNote, setStepNote] = useState('');
   const [mintTxid, setMintTxid] = useState('');
   const [listingTxid, setListingTxid] = useState('');
   const [error, setError] = useState('');
@@ -268,13 +269,15 @@ export default function CreatePage() {
               const wcPrepRequest = wcPayloadMode === 'raw'
                 ? { transaction: prepParams.transaction, sourceOutputs: prepParams.sourceOutputs as any }
                 : { transaction: prepParams.transactionHex, sourceOutputs: prepParams.sourceOutputsJson as any };
+              setStepNote('Step 1 of 2 — Approve "Prepare wallet for NFT minting" in your wallet app, then the actual mint will follow.');
               const prepResult = await signTransaction({
                 ...wcPrepRequest,
                 broadcast: true,
                 userPrompt: prepParams.userPrompt,
               });
+              setStepNote('');
               if (!prepResult) {
-                setError('Wallet preparation was cancelled. Cannot mint without a genesis-capable UTXO.');
+                setError('Wallet prep was cancelled. Open your wallet app, approve the "Prepare wallet for NFT minting" request, then click Create & List NFT again.');
                 setStep(0);
                 return;
               }
@@ -591,9 +594,15 @@ export default function CreatePage() {
                 <h2 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
                   {steps[step - 1]?.label}...
                 </h2>
-                <p className="text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
-                  Please wait while your NFT is being created on Chipnet
-                </p>
+                {stepNote ? (
+                  <p className="text-xs mb-6 font-medium px-4 py-2 rounded-lg" style={{ color: 'var(--accent)', background: 'rgba(0,229,69,0.07)', border: '1px solid rgba(0,229,69,0.2)' }}>
+                    {stepNote}
+                  </p>
+                ) : (
+                  <p className="text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
+                    Please wait while your NFT is being created on Chipnet
+                  </p>
+                )}
                 <div className="flex justify-center gap-2">
                   {steps.map((s, i) => (
                     <div key={i} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs ${i + 1 < step ? 'badge-green' : i + 1 === step ? 'badge-blue animate-pulse' : ''
