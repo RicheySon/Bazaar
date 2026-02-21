@@ -17,8 +17,8 @@ export default function CollectionsPage() {
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('table');
 
   useEffect(() => {
-    const load = async () => {
-      setIsLoading(true);
+    const load = async (showLoading = false) => {
+      if (showLoading) setIsLoading(true);
       try {
         const res = await fetch('/api/collections');
         const data = await res.json();
@@ -26,11 +26,11 @@ export default function CollectionsPage() {
       } catch {
         setCollections([]);
       } finally {
-        setIsLoading(false);
+        if (showLoading) setIsLoading(false);
       }
     };
-    load();
-    const interval = setInterval(load, 30000);
+    load(true);
+    const interval = setInterval(() => load(false), 30000);
     return () => clearInterval(interval);
   }, []);
 

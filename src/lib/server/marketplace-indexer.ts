@@ -23,7 +23,7 @@ const MAX_EVENTS = parseInt(process.env.MARKETPLACE_INDEX_LIMIT || '200');
 const ADDRESS_PREFIX =
   (process.env.NEXT_PUBLIC_ADDRESS_PREFIX as 'bchtest' | 'bitcoincash' | 'bchreg' | undefined) ||
   (NETWORK === 'mainnet' ? 'bitcoincash' : 'bchtest');
-const MARKETPLACE_CACHE_MS = Math.max(0, parseInt(process.env.MARKETPLACE_INDEX_CACHE_MS || '15000'));
+const MARKETPLACE_CACHE_MS = Math.max(0, parseInt(process.env.MARKETPLACE_INDEX_CACHE_MS || '30000'));
 
 type MarketplaceData = {
   listings: any[];
@@ -39,11 +39,12 @@ function commitmentToCid(commitment: string): string {
   return commitmentHexToCid(commitment);
 }
 
-async function enrichMetadata(commitmentHex: string) {
-  const cid = commitmentToCid(commitmentHex);
-  if (!cid) return null;
-  const data = await fetchMetadataFromIPFS(`ipfs://${cid}`);
-  if (!data) return null;
+// In-memory IPFS metadata cache: avoids re-fetching Pinata on every index refresh.
+// TTL of 10 minutes — long enough to survive multiple cache cycles without going stale.
+const METADATA_CACHE_TTL_MS = 10 * 60 * 1000;
+const metadataCache = new Map<string, { data: ReturnType<typeof parseMetadata>; fetchedAt: number }>();
+
+function parseMetadata(data: Record<string, unknown>) {
   return {
     name: (data.name as string) || 'Untitled',
     description: (data.description as string) || '',
@@ -54,6 +55,22 @@ async function enrichMetadata(commitmentHex: string) {
     collection: (data.collection as string) || '',
     collectionImage: (data.collectionImage as string) || '',
   };
+}
+
+async function enrichMetadata(commitmentHex: string) {
+  const cid = commitmentToCid(commitmentHex);
+  if (!cid) return null;
+
+  const cached = metadataCache.get(cid);
+  if (cached && Date.now() - cached.fetchedAt < METADATA_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const data = await fetchMetadataFromIPFS(`ipfs://${cid}`);
+  if (!data) return null;
+  const parsed = parseMetadata(data);
+  metadataCache.set(cid, { data: parsed, fetchedAt: Date.now() });
+  return parsed;
 }
 
 function makeSlug(name: string): string {
@@ -346,124 +363,104 @@ export async function getMarketplaceData() {
 
       const orderedListings = Array.from(listingEvents.entries()).sort((a, b) => a[1].height - b[1].height);
 
-      for (const [txid, entry] of orderedListings) {
-        const payload = entry.payload;
-        const createdAtMs = await getBlockTimeMs(provider, entry.height);
+      // Process all listings in parallel — avoids sequential Electrum + IPFS round-trips.
+      const results = await Promise.all(
+        orderedListings.map(async ([txid, entry]) => {
+          try {
+            const payload = entry.payload;
+            const createdAtMs = await getBlockTimeMs(provider, entry.height);
 
-      const isAuction = payload.listingType === 'auction';
-      const contractAddress = isAuction
-        ? buildAuctionAddress(
-            provider,
-            payload.sellerPkh,
-            payload.creatorPkh,
-            payload.minBid,
-            payload.endTime,
-            payload.royaltyBasisPoints,
-            payload.minBidIncrement
-          )
-        : buildMarketplaceAddress(
-            provider,
-            payload.sellerPkh,
-            payload.creatorPkh,
-            payload.price,
-            payload.royaltyBasisPoints
-          );
+            const isAuction = payload.listingType === 'auction';
+            const contractAddress = isAuction
+              ? buildAuctionAddress(
+                  provider,
+                  payload.sellerPkh,
+                  payload.creatorPkh,
+                  payload.minBid,
+                  payload.endTime,
+                  payload.royaltyBasisPoints,
+                  payload.minBidIncrement
+                )
+              : buildMarketplaceAddress(
+                  provider,
+                  payload.sellerPkh,
+                  payload.creatorPkh,
+                  payload.price,
+                  payload.royaltyBasisPoints
+                );
 
-      let activeUtxo = null as any;
-      try {
-        const utxos = await provider.getUtxos(contractAddress);
-        activeUtxo = utxos.find((u) => u.token?.category === payload.tokenCategory);
-      } catch {
-        activeUtxo = null;
+            let activeUtxo = null as any;
+            try {
+              const utxos = await provider.getUtxos(contractAddress);
+              activeUtxo = utxos.find((u) => u.token?.category === payload.tokenCategory);
+            } catch {
+              activeUtxo = null;
+            }
+
+            const isActive = !!activeUtxo;
+            const commitment = activeUtxo?.token?.nft?.commitment || entry.commitment || '';
+            const metadata = await enrichMetadata(commitment);
+            const statusEvent = statusEvents.get(txid);
+            const statusAtMs = statusEvent
+              ? await getBlockTimeMs(provider, statusEvent.height)
+              : createdAtMs;
+            const bidderEvents = (bidEvents.get(txid) || []).slice().sort((a, b) => a.height - b.height);
+            const lastBidAtMs =
+              bidderEvents.length > 0
+                ? await getBlockTimeMs(provider, bidderEvents[bidderEvents.length - 1].height)
+                : createdAtMs;
+
+            if (isAuction) {
+              const lastBid = bidderEvents.length ? bidderEvents[bidderEvents.length - 1].bidAmount : 0n;
+              const currentBidRaw = activeUtxo ? activeUtxo.satoshis : lastBid;
+              const currentBid = currentBidRaw >= payload.minBid ? currentBidRaw.toString() : '0';
+              const ended = payload.endTime ? payload.endTime <= nowSeconds() : false;
+              const lastBidder = bidderEvents.length ? bidderEvents[bidderEvents.length - 1].bidderPkh : '';
+              const currentBidder = currentBid !== '0' && lastBidder ? pkhToCashAddress(lastBidder) : '';
+              const bidHistory = await Promise.all(
+                bidderEvents.map(async (bid) => ({
+                  bidder: pkhToCashAddress(bid.bidderPkh),
+                  amount: bid.bidAmount.toString(),
+                  txid: bid.txid,
+                  timestamp: await getBlockTimeMs(provider, bid.height),
+                }))
+              );
+              let status: string = isActive ? (ended ? 'ended' : 'active') : 'sold';
+              if (statusEvent) status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
+              return { type: 'auction' as const, item: {
+                txid, tokenCategory: payload.tokenCategory,
+                minBid: toSatoshisString(payload.minBid),
+                minBidIncrement: toSatoshisString(payload.minBidIncrement),
+                currentBid, endTime: payload.endTime,
+                seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
+                creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
+                commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
+                currentBidder, bidHistory, status, metadata,
+                createdAt: createdAtMs, updatedAt: statusEvent ? statusAtMs : lastBidAtMs,
+              }};
+            } else {
+              let status: string = isActive ? 'active' : 'sold';
+              if (statusEvent) status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
+              return { type: 'listing' as const, item: {
+                txid, tokenCategory: payload.tokenCategory,
+                price: toSatoshisString(payload.price),
+                seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
+                creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
+                commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
+                status, metadata, createdAt: createdAtMs, updatedAt: statusAtMs,
+              }};
+            }
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      for (const result of results) {
+        if (!result) continue;
+        if (result.type === 'auction') auctions.push(result.item);
+        else listings.push(result.item);
       }
-
-      const isActive = !!activeUtxo;
-      const commitment = activeUtxo?.token?.nft?.commitment || entry.commitment || '';
-      const metadata = await enrichMetadata(commitment);
-      const statusEvent = statusEvents.get(txid);
-      const statusAtMs = statusEvent
-        ? await getBlockTimeMs(provider, statusEvent.height)
-        : createdAtMs;
-      const bidderEvents = bidEvents.get(txid) || [];
-      bidderEvents.sort((a, b) => a.height - b.height);
-      const lastBidAtMs =
-        bidderEvents.length > 0
-          ? await getBlockTimeMs(provider, bidderEvents[bidderEvents.length - 1].height)
-          : createdAtMs;
-
-      if (isAuction) {
-        const lastBid = bidderEvents.length
-          ? bidderEvents[bidderEvents.length - 1].bidAmount
-          : 0n;
-        const currentBidRaw = activeUtxo ? activeUtxo.satoshis : lastBid;
-        const currentBid =
-          currentBidRaw >= payload.minBid ? currentBidRaw.toString() : '0';
-        const ended = payload.endTime ? payload.endTime <= nowSeconds() : false;
-
-        const lastBidder = bidderEvents.length
-          ? bidderEvents[bidderEvents.length - 1].bidderPkh
-          : '';
-        const currentBidder =
-          currentBid !== '0' && lastBidder ? pkhToCashAddress(lastBidder) : '';
-        const bidHistory = bidderEvents.map((bid) => ({
-          bidder: pkhToCashAddress(bid.bidderPkh),
-          amount: bid.bidAmount.toString(),
-          txid: bid.txid,
-          timestamp: 0,
-        }));
-
-        let status: string = isActive ? (ended ? 'ended' : 'active') : 'sold';
-        if (statusEvent) {
-          status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
-        }
-
-        auctions.push({
-          txid,
-          tokenCategory: payload.tokenCategory,
-          minBid: toSatoshisString(payload.minBid),
-          minBidIncrement: toSatoshisString(payload.minBidIncrement),
-          currentBid,
-          endTime: payload.endTime,
-          seller: pkhToCashAddress(payload.sellerPkh),
-          sellerPkh: payload.sellerPkh,
-          creator: pkhToCashAddress(payload.creatorPkh),
-          creatorPkh: payload.creatorPkh,
-          commitment,
-          royaltyBasisPoints: payload.royaltyBasisPoints,
-          currentBidder,
-          bidHistory,
-          status,
-          metadata,
-          createdAt: createdAtMs,
-          updatedAt: statusEvent ? statusAtMs : lastBidAtMs,
-        });
-
-        for (let i = 0; i < bidHistory.length; i++) {
-          const bid = bidderEvents[i];
-          bidHistory[i].timestamp = await getBlockTimeMs(provider, bid.height);
-        }
-      } else {
-        let status: string = isActive ? 'active' : 'sold';
-        if (statusEvent) {
-          status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
-        }
-        listings.push({
-          txid,
-          tokenCategory: payload.tokenCategory,
-          price: toSatoshisString(payload.price),
-          seller: pkhToCashAddress(payload.sellerPkh),
-          sellerPkh: payload.sellerPkh,
-          creator: pkhToCashAddress(payload.creatorPkh),
-          creatorPkh: payload.creatorPkh,
-          commitment,
-          royaltyBasisPoints: payload.royaltyBasisPoints,
-          status,
-          metadata,
-          createdAt: createdAtMs,
-          updatedAt: statusAtMs,
-        });
-      }
-    }
 
       return {
         listings,

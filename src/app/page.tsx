@@ -87,8 +87,8 @@ export default function HomePage() {
   }, [fetchPrice]);
 
   useEffect(() => {
-    const loadListings = async () => {
-      setLoading(true);
+    const loadListings = async (showLoading = false) => {
+      if (showLoading) setLoading(true);
       try {
         const data = await fetchMarketplaceListings();
         if (data) {
@@ -120,11 +120,11 @@ export default function HomePage() {
       } catch (err) {
         console.warn('Failed to load listings (API might be unavailable):', err);
       } finally {
-        setLoading(false);
+        if (showLoading) setLoading(false);
       }
     };
-    loadListings();
-    const interval = setInterval(loadListings, 30000);
+    loadListings(true);
+    const interval = setInterval(() => loadListings(false), 30000);
     return () => clearInterval(interval);
   }, [setLoading, setListings, setAuctions]);
 

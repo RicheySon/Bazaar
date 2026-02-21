@@ -12,8 +12,8 @@ export default function ExplorePage() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   useEffect(() => {
-    const loadListings = async () => {
-      setLoading(true);
+    const loadListings = async (showLoading = false) => {
+      if (showLoading) setLoading(true);
       try {
         const data = await fetchMarketplaceListings();
         if (data) {
@@ -45,11 +45,11 @@ export default function ExplorePage() {
       } catch (err) {
         console.error('Failed to load listings:', err);
       } finally {
-        setLoading(false);
+        if (showLoading) setLoading(false);
       }
     };
-    loadListings();
-    const interval = setInterval(loadListings, 30000);
+    loadListings(true);
+    const interval = setInterval(() => loadListings(false), 30000);
     return () => clearInterval(interval);
   }, [setLoading, setListings, setAuctions]);
 
