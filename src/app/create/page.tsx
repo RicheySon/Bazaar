@@ -53,12 +53,14 @@ export default function CreatePage() {
   const [error, setError] = useState('');
 
   const waitForTokenUtxo = async (address: string, tokenCategory: string, fromTxid?: string) => {
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 24; i++) {
       const tokenUtxos = await getTokenUtxos(address);
       const utxo = tokenUtxos.find((u) =>
         u.token?.category === tokenCategory &&
         u.token?.nft &&
-        u.token.nft.capability !== 'minting' &&
+        // Only exclude minting tokens when looking for a specific child NFT (addToCollection path).
+        // When fromTxid is not set, we accept any capability so genesis minting tokens are found too.
+        (!fromTxid || u.token.nft.capability !== 'minting') &&
         (!fromTxid || u.txid === fromTxid)
       );
       if (utxo) return utxo;
