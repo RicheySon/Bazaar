@@ -24,6 +24,7 @@ export default function NFTDetailPage() {
   const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
   const { bchUsd, fetchPrice } = usePriceStore();
   const [listing, setListing] = useState<NFTListing | null>(null);
+  const [collectionFloor, setCollectionFloor] = useState<bigint | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isBuying, setIsBuying] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -57,6 +58,9 @@ export default function NFTDetailPage() {
             metadata: data.metadata,
           };
           setListing(mapped);
+          if (data.collectionFloor) {
+            setCollectionFloor(BigInt(data.collectionFloor));
+          }
         } else {
           setListing(null);
         }
@@ -293,6 +297,21 @@ export default function NFTDetailPage() {
                 </div>
               )}
               {!(bchUsd > 0 && displayPrice > 0n) && <div className="mb-4" />}
+
+              {/* Collection floor */}
+              {collectionFloor !== null && collectionFloor > 0n && (
+                <div className="flex items-center justify-between text-xs mb-3 px-3 py-2 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Collection Floor</span>
+                  <span className="font-mono font-semibold" style={{ color: 'var(--accent)' }}>
+                    {formatBCH(collectionFloor)}
+                    {bchUsd > 0 && (
+                      <span className="ml-1 font-normal" style={{ color: 'var(--text-muted)' }}>
+                        ({formatUSD(collectionFloor, bchUsd)})
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
 
               {/* Royalty breakdown */}
               <div className="flex items-center gap-4 text-xs mb-6" style={{ color: 'var(--text-muted)' }}>

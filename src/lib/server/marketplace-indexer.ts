@@ -489,10 +489,27 @@ export async function getMarketplaceData() {
 
 export async function getListingById(id: string) {
   const data = await getMarketplaceData();
-  const listing = data.listings.find((l: any) => l.txid === id);
-  if (listing) return listing;
-  const auction = data.auctions.find((a: any) => a.txid === id);
-  return auction || null;
+  const item = data.listings.find((l: any) => l.txid === id)
+    || data.auctions.find((a: any) => a.txid === id)
+    || null;
+  if (!item) return null;
+
+  // Compute floor price: min active price across all listings with the same tokenCategory
+  const category = item.tokenCategory;
+  if (category) {
+    const allActive: any[] = [...data.listings, ...data.auctions].filter(
+      (x: any) => x.tokenCategory === category && x.status === 'active'
+    );
+    if (allActive.length > 0) {
+      const floor = allActive.reduce((min: bigint, x: any) => {
+        const p = BigInt(x.currentBid && x.currentBid !== '0' ? x.currentBid : (x.price || '0'));
+        return p < min ? p : min;
+      }, BigInt(allActive[0].currentBid && allActive[0].currentBid !== '0'
+        ? allActive[0].currentBid : (allActive[0].price || '0')));
+      return { ...item, collectionFloor: floor.toString() };
+    }
+  }
+  return item;
 }
 
 export async function getCollectionsData() {
