@@ -110,6 +110,25 @@ export default function HomePage() {
   const totalListings = collections.reduce((sum, c) => sum + c.listedCount, 0);
   const uniqueSellers = collections.reduce((sum, c) => sum + c.ownerCount, 0);
 
+  // Time-filtered trending: keep collections that have at least one item within the window
+  const timeWindowMs: Record<TimeFilter, number> = {
+    '1h':  1 * 60 * 60 * 1000,
+    '6h':  6 * 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '7d':  7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+  };
+  const cutoff = Date.now() - timeWindowMs[timeFilter];
+  const trendingCollections = collections
+    .map((col) => {
+      const recentItems = (col.items || []).filter((item: any) => (item.createdAt || 0) >= cutoff);
+      return { ...col, recentCount: recentItems.length };
+    })
+    .filter((col) => col.recentCount > 0)
+    .sort((a, b) => b.recentCount - a.recentCount || Number(BigInt(b.floorPrice || '0') - BigInt(a.floorPrice || '0')));
+  // Fall back to all collections if nothing matches the window (e.g. no 1h activity)
+  const displayCollections = trendingCollections.length > 0 ? trendingCollections : collections;
+
   return (
     <div className="relative">
       <MemphisDecoration />
@@ -226,7 +245,7 @@ export default function HomePage() {
                       </td>
                     </tr>
                   ) : (
-                    collections.map((col, i) => {
+                    displayCollections.map((col, i) => {
                       const floor = BigInt(col.floorPrice || '0');
                       const vol = BigInt(col.totalVolume || '0');
 
