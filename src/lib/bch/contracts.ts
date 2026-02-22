@@ -1149,7 +1149,15 @@ export async function buildWcMintFromCollectionParams(
       ...decodedTx.inputs[i],
       lockingBytecode: utxo.token ? mintingTokenLockingBytecode : userLockingBytecode,
       valueSatoshis: utxo.satoshis,
-      token: utxo.token ?? undefined,
+      // Convert hex string fields to Uint8Array so buildSourceOutputsJson's binToHex calls succeed
+      token: utxo.token ? {
+        amount: utxo.token.amount,
+        category: new Uint8Array(Buffer.from(utxo.token.category as string, 'hex')),
+        nft: utxo.token.nft ? {
+          capability: (utxo.token.nft as any).capability,
+          commitment: hexToBytes((utxo.token.nft as any).commitment || ''),
+        } : undefined,
+      } : undefined,
     }));
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
 
