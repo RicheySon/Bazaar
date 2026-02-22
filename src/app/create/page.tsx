@@ -188,6 +188,10 @@ export default function CreatePage() {
           royalty: royaltyPercent * 100,
           collection: effectiveCollection,
           attributes: attributes.filter((a) => a.trait_type && a.value),
+          ...(mediaType === 'video' && {
+            animation_url: imageResult.ipfsUri,
+            mimeType: mediaFile.type || 'video/mp4',
+          }),
         });
 
         if (!metadataResult.success || !metadataResult.ipfsHash) {

@@ -116,6 +116,8 @@ export async function uploadMetadataToPinata(metadata: {
   royalty: number;
   collection?: string;
   attributes?: Array<{ trait_type: string; value: string }>;
+  animation_url?: string;
+  mimeType?: string;
 }): Promise<PinataUploadResult> {
   if (IS_BROWSER) {
     try {
