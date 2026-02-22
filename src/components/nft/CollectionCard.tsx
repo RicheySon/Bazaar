@@ -1,10 +1,10 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import Image from 'next/image';
 import Link from 'next/link';
 import { Users, BarChart2, Tag } from 'lucide-react';
 import { formatBCH, ipfsToHttp, shortenAddress } from '@/lib/utils';
+import { MediaDisplay } from './MediaDisplay';
 
 interface CollectionCardProps {
   collection: {
@@ -42,7 +42,7 @@ export function CollectionCard({ collection, index = 0 }: CollectionCardProps) {
           {/* Banner / Image */}
           <div className="relative h-32 overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
             {imageUrl ? (
-              <Image
+              <MediaDisplay
                 src={imageUrl}
                 alt={collection.name}
                 fill

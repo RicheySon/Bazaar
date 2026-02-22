@@ -1,10 +1,10 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import Image from 'next/image';
 import Link from 'next/link';
 import { Clock, Gavel, Tag, User } from 'lucide-react';
 import { formatBCH, shortenAddress, timeRemaining, ipfsToHttp } from '@/lib/utils';
+import { MediaDisplay } from './MediaDisplay';
 import type { NFTListing, AuctionListing } from '@/lib/types';
 
 interface NFTCardProps {
@@ -33,7 +33,7 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
           {/* Image */}
           <div className="relative aspect-square overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
             {listing.metadata?.image ? (
-              <Image
+              <MediaDisplay
                 src={imageUrl}
                 alt={listing.metadata?.name || 'NFT'}
                 fill

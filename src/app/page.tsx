@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useNFTStore } from '@/lib/store/nft-store';
 import { usePriceStore } from '@/lib/store/price-store';
-import { formatBCH, formatUSD, shortenAddress, ipfsToHttp } from '@/lib/utils';
+import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/lib/utils';
 
 const timeFilters = ['1h', '6h', '24h', '7d', '30d'] as const;
 type TimeFilter = typeof timeFilters[number];
@@ -257,13 +257,13 @@ export default function HomePage() {
                               <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0"
                                 style={{ background: 'var(--bg-hover)' }}>
                                 {col.image ? (
-                                  <Image
-                                    src={ipfsToHttp(col.image)}
-                                    alt={col.name}
-                                    width={40}
-                                    height={40}
-                                    className="w-full h-full object-cover"
-                                  />
+                                  isVideoUrl(ipfsToHttp(col.image)) ? (
+                                    <video src={ipfsToHttp(col.image)} autoPlay loop muted playsInline
+                                      className="w-full h-full object-cover" />
+                                  ) : (
+                                    <Image src={ipfsToHttp(col.image)} alt={col.name}
+                                      width={40} height={40} className="w-full h-full object-cover" />
+                                  )
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-xs font-bold"
                                     style={{ color: 'var(--accent)' }}>

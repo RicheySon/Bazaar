@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
-import { formatBCH, formatUSD, shortenAddress, ipfsToHttp } from '@/lib/utils';
+import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/lib/utils';
 import { fetchMarketplaceListingById } from '@/lib/bch/api-client';
 import { buyNFT, buildWcBuyParams } from '@/lib/bch/contracts';
 import { loadWallet } from '@/lib/bch/wallet';
@@ -213,20 +213,32 @@ export default function NFTDetailPage() {
               style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
             >
               {displayImage ? (
-                <img
-                  src={displayImage}
-                  alt={displayName}
-                  className="w-full h-full object-cover"
-                  onError={(e) => {
-                    const next = imgFallbackRef.current + 1;
-                    if (next < imageGateways.length) {
-                      imgFallbackRef.current = next;
-                      (e.target as HTMLImageElement).src = imageGateways[next];
-                    } else {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }
-                  }}
-                />
+                isVideoUrl(displayImage) ? (
+                  <video
+                    src={displayImage}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    controls
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <img
+                    src={displayImage}
+                    alt={displayName}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      const next = imgFallbackRef.current + 1;
+                      if (next < imageGateways.length) {
+                        imgFallbackRef.current = next;
+                        (e.target as HTMLImageElement).src = imageGateways[next];
+                      } else {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }
+                    }}
+                  />
+                )
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <div className="text-center">

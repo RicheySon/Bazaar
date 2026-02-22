@@ -52,6 +52,13 @@ export function timeRemaining(endTimestamp: number): string {
   return `${secs}s`;
 }
 
+const VIDEO_EXTS = ['.mp4', '.webm', '.ogv', '.mov', '.m4v'];
+export function isVideoUrl(url: string): boolean {
+  if (!url) return false;
+  const lower = url.split('?')[0].toLowerCase();
+  return VIDEO_EXTS.some((ext) => lower.endsWith(ext));
+}
+
 export function ipfsToHttp(ipfsUri: string): string {
   if (!ipfsUri) return '/placeholder-nft.png';
   if (ipfsUri.startsWith('http')) return ipfsUri;
