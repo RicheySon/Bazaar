@@ -1883,6 +1883,7 @@ export async function mintNFT(
   tokenAddress: string,   // token-capable address (z… prefix) for NFT output
   commitment: string,     // IPFS CID or arbitrary UTF-8 string (truncated to 40 bytes)
   capability: 'none' | 'mutable' | 'minting' = 'none',
+  payment?: { toAddress: string; amount: bigint }, // optional payment output (e.g. drop mint price)
 ): Promise<TransactionResult> {
   try {
     // CashTokens genesis: the token category = txid of the genesis input.
@@ -1951,22 +1952,27 @@ export async function mintNFT(
       .filter(u => !(u.txid === genesisInput!.txid && u.vout === genesisInput!.vout))
       .sort((a, b) => Number(b.satoshis - a.satoshis));
 
+    const paymentAmount = payment?.amount ?? 0n;
     const allFundingUtxos: Utxo[] = [genesisInput];
     let totalSats = genesisInput.satoshis;
+    // Gather enough UTXOs to cover NFT dust + fee + optional payment
+    const minimumTarget = 4000n + paymentAmount;
     for (const u of otherUtxos) {
-      if (totalSats >= 4000n) break;
+      if (totalSats >= minimumTarget) break;
       allFundingUtxos.push(u);
       totalSats += u.satoshis;
     }
 
-    if (totalSats < 2000n) {
-      return { success: false, error: `Insufficient funds: ${totalSats} sats available, need at least 2000 sats for minting.` };
+    const minimumNeeded = 2000n + paymentAmount;
+    if (totalSats < minimumNeeded) {
+      return { success: false, error: `Insufficient funds: ${totalSats} sats available, need at least ${minimumNeeded} sats.` };
     }
 
-    // Fee estimate: 148 bytes per P2PKH input + ~200 bytes for outputs/overhead
-    const fee = BigInt(Math.max(500, allFundingUtxos.length * 148 + 200));
+    // Fee estimate: 148 bytes per P2PKH input + ~34 bytes per extra output + ~200 overhead
+    const extraOutputCount = payment && payment.amount > 546n ? 1 : 0;
+    const fee = BigInt(Math.max(500, allFundingUtxos.length * 148 + 200 + extraOutputCount * 34));
     const nftOutputSats = 1000n;
-    const change = totalSats - nftOutputSats - fee;
+    const change = totalSats - nftOutputSats - fee - paymentAmount;
 
     // fromP2PKH: generates standard P2PKH unlocking scripts (not P2SH).
     // withTime(0): sets locktime=0, avoids calling getBlockHeight() on Electrum.
@@ -1982,6 +1988,11 @@ export async function mintNFT(
       .withTime(0)
       .withHardcodedFee(fee)
       .withoutChange();
+
+    // Optional: include payment to drop creator (e.g. mint price)
+    if (payment && payment.amount > 546n) {
+      tx.to(payment.toAddress, payment.amount);
+    }
 
     if (change > 546n) {
       tx.to(address, change);

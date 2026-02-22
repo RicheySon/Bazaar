@@ -7,7 +7,7 @@ import { mintNFT } from '@/lib/bch/contracts';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { privateKeyHex, pkh, address, tokenAddress, commitment, capability } = body;
+    const { privateKeyHex, pkh, address, tokenAddress, commitment, capability, payment } = body;
 
     if (!privateKeyHex || !pkh || !address || !commitment) {
       return NextResponse.json({ error: 'Missing required fields: privateKeyHex, pkh, address, commitment' }, { status: 400 });
@@ -17,7 +17,12 @@ export async function POST(request: NextRequest) {
     const nftCapability: 'none' | 'mutable' | 'minting' =
       capability === 'minting' ? 'minting' : capability === 'mutable' ? 'mutable' : 'none';
 
-    const result = await mintNFT(privateKey, pkh, address, tokenAddress || address, commitment, nftCapability);
+    // Optional payment output (used by drop mints to pay the creator atomically)
+    const paymentOutput = payment?.toAddress && payment?.amount
+      ? { toAddress: payment.toAddress, amount: BigInt(payment.amount) }
+      : undefined;
+
+    const result = await mintNFT(privateKey, pkh, address, tokenAddress || address, commitment, nftCapability, paymentOutput);
 
     return NextResponse.json(result);
   } catch (err) {

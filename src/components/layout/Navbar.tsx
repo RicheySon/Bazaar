@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   Wallet, Menu, X, ChevronDown, Search, TrendingUp, LayoutGrid,
   Activity, Rocket, Layers, PlusCircle, Code2, BookOpen, Terminal, Key, User,
-  LogOut, Library
+  LogOut, Library, Zap
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { WalletModal } from '@/components/wallet/WalletModal';
@@ -41,8 +41,10 @@ const navSections: NavSection[] = [
   {
     label: 'Mint',
     items: [
-      { href: '/create', label: 'Create NFT', icon: PlusCircle, description: 'Mint a new CashToken NFT' },
-      { href: '/explore?filter=auction', label: 'Auctions', icon: Layers, description: 'Live English auctions' },
+      { href: '/create',                label: 'Create NFT',  icon: PlusCircle, description: 'Mint a new CashToken NFT' },
+      { href: '/drops',                 label: 'NFT Drops',   icon: Zap,        description: 'Scheduled collection drops' },
+      { href: '/drops/create',          label: 'Create Drop', icon: Rocket,     description: 'Launch your own NFT drop' },
+      { href: '/explore?filter=auction', label: 'Auctions',   icon: Layers,     description: 'Live English auctions' },
     ],
   },
   {

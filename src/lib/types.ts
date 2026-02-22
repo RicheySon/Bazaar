@@ -121,3 +121,50 @@ export interface ChipnetConfig {
 
 export type ListingFilter = 'all' | 'fixed' | 'auction';
 export type SortOption = 'newest' | 'price-low' | 'price-high' | 'ending-soon';
+
+// ─── NFT Drops ───────────────────────────────────────────────────────────────
+
+export interface NFTDrop {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  bannerImage: string;          // ipfs:// URI (used as main banner)
+  thumbnailImage?: string;      // ipfs:// URI (optional separate thumbnail)
+  creatorAddress: string;
+
+  // Supply
+  totalSupply: number;          // max mintable NFTs
+  mintedCount: number;          // how many have been minted
+
+  // Pricing
+  mintPrice: string;            // satoshis as string (BigInt-safe)
+
+  // Timing (unix timestamps, seconds)
+  mintStartTime: number;        // public mint opens
+  mintEndTime?: number;         // optional close time
+
+  // Early access / allowlist
+  whitelistEnabled: boolean;
+  whitelistStartTime?: number;  // pre-sale opens (before mintStartTime)
+  whitelistAddresses?: string[];
+
+  // Per-wallet cap
+  maxPerWallet: number;
+
+  // Metadata template (applied to each sequentially minted NFT)
+  collectionName: string;
+  metadataDescription: string;
+  royaltyBasisPoints: number;
+  attributes?: Array<{ trait_type: string; value: string }>;
+
+  // Per-address mint count: address → number minted
+  mintedBy: Record<string, number>;
+
+  // Token categories for minted NFTs (txids)
+  mintedTokenCategories: string[];
+
+  createdAt: number;            // unix timestamp, seconds
+}
+
+export type DropStatus = 'upcoming' | 'presale' | 'live' | 'ended' | 'sold-out';
