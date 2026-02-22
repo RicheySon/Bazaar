@@ -9,9 +9,7 @@ import {
 } from 'lucide-react';
 import { useNFTStore } from '@/lib/store/nft-store';
 import { usePriceStore } from '@/lib/store/price-store';
-import { fetchMarketplaceListings } from '@/lib/bch/api-client';
 import { formatBCH, formatUSD, shortenAddress, ipfsToHttp } from '@/lib/utils';
-import type { NFTListing } from '@/lib/types';
 
 const timeFilters = ['1h', '6h', '24h', '7d', '30d'] as const;
 type TimeFilter = typeof timeFilters[number];
@@ -76,9 +74,10 @@ function ActivityItem({ type, item, price, time }: {
 }
 
 export default function HomePage() {
-  const { listings, auctions, isLoading, setLoading, setListings, setAuctions } = useNFTStore();
+  const { isLoading, setLoading } = useNFTStore();
   const { bchUsd, fetchPrice } = usePriceStore();
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('24h');
+  const [collections, setCollections] = useState<any[]>([]);
 
   useEffect(() => {
     fetchPrice();
@@ -87,55 +86,29 @@ export default function HomePage() {
   }, [fetchPrice]);
 
   useEffect(() => {
-    const loadListings = async (showLoading = false) => {
+    const load = async (showLoading = false) => {
       if (showLoading) setLoading(true);
       try {
-        const data = await fetchMarketplaceListings();
-        if (data) {
-          const apiListings: NFTListing[] = data.listings.map((l) => ({
-            txid: l.txid, vout: 0, tokenCategory: l.tokenCategory,
-            commitment: l.commitment || '', satoshis: 0, price: BigInt(l.price),
-            sellerAddress: l.seller, sellerPkh: l.sellerPkh || '', creatorAddress: l.creator || l.seller,
-            creatorPkh: l.creatorPkh || '', royaltyBasisPoints: l.royaltyBasisPoints,
-            status: 'active' as const, listingType: 'fixed' as const,
-            metadata: l.metadata,
-          }));
-          const apiAuctions = data.auctions.map((a) => ({
-            txid: a.txid, vout: 0, tokenCategory: a.tokenCategory,
-            commitment: a.commitment || '', satoshis: 0, price: BigInt((a.currentBid && a.currentBid !== '0') ? a.currentBid : a.minBid),
-            sellerAddress: a.seller, sellerPkh: a.sellerPkh || '', creatorAddress: a.creator || a.seller,
-            creatorPkh: a.creatorPkh || '', royaltyBasisPoints: a.royaltyBasisPoints,
-            status: (a.status || 'active') as any, listingType: 'auction' as const,
-            minBid: BigInt(a.minBid || '0'),
-            currentBid: BigInt(a.currentBid || '0'),
-            currentBidder: a.currentBidder || '',
-            endTime: a.endTime || 0,
-            minBidIncrement: BigInt(a.minBidIncrement || '0'),
-            bidHistory: a.bidHistory || [],
-            metadata: a.metadata,
-          }));
-          setListings(apiListings);
-          setAuctions(apiAuctions);
-        }
+        const res = await fetch('/api/collections');
+        const data = await res.json();
+        setCollections(data.collections || []);
       } catch (err) {
-        console.warn('Failed to load listings (API might be unavailable):', err);
+        console.warn('Failed to load collections:', err);
       } finally {
         if (showLoading) setLoading(false);
       }
     };
-    loadListings(true);
-    const interval = setInterval(() => loadListings(false), 30000);
+    load(true);
+    const interval = setInterval(() => load(false), 30000);
     return () => clearInterval(interval);
-  }, [setLoading, setListings, setAuctions]);
+  }, [setLoading]);
 
-  const allItems = [...listings, ...auctions];
-
-  // Compute live stats from real listing data
-  const totalVolume = allItems.reduce((sum, item) => sum + Number(item.price), 0) / 1e8;
-  const floorPrice = allItems.length > 0
-    ? Number(allItems.reduce((min, item) => item.price < min ? item.price : min, allItems[0]?.price || 0n)) / 1e8
-    : 0;
-  const uniqueSellers = new Set(allItems.map(item => item.sellerAddress)).size;
+  // Compute live stats from collections
+  const totalVolume = collections.reduce((sum, c) => sum + Number(BigInt(c.totalVolume || '0')), 0) / 1e8;
+  const allFloors = collections.map(c => BigInt(c.floorPrice || '0')).filter(f => f > 0n);
+  const floorPrice = allFloors.length > 0 ? Number(allFloors.reduce((min, f) => f < min ? f : min)) / 1e8 : 0;
+  const totalListings = collections.reduce((sum, c) => sum + c.listedCount, 0);
+  const uniqueSellers = collections.reduce((sum, c) => sum + c.ownerCount, 0);
 
   return (
     <div className="relative">
@@ -153,7 +126,7 @@ export default function HomePage() {
             )}
             <StatCard icon={BarChart3} label="Total Volume" value={`${totalVolume.toFixed(4)} BCH`} />
             <div className="w-px h-8 shrink-0" style={{ background: 'var(--border)' }} />
-            <StatCard icon={Activity} label="Listings" value={`${allItems.length}`} />
+            <StatCard icon={Activity} label="Listings" value={`${totalListings}`} />
             <div className="w-px h-8 shrink-0 hidden sm:block" style={{ background: 'var(--border)' }} />
             <div className="hidden sm:block">
               <StatCard icon={Shield} label="Floor Price" value={floorPrice > 0 ? `${floorPrice.toFixed(4)} BCH` : '--'} />
@@ -237,7 +210,7 @@ export default function HomePage() {
                         <td className="text-right hidden sm:table-cell"><div className="skeleton h-4 w-10 ml-auto" /></td>
                       </tr>
                     ))
-                  ) : allItems.length === 0 ? (
+                  ) : collections.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="text-center py-16">
                         <Zap className="h-8 w-8 mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
@@ -253,22 +226,21 @@ export default function HomePage() {
                       </td>
                     </tr>
                   ) : (
-                    allItems.map((item, i) => {
-                      const isAuction = item.listingType === 'auction';
-                      const priceBCH = Number(item.price) / 1e8;
+                    collections.map((col, i) => {
+                      const floor = BigInt(col.floorPrice || '0');
+                      const vol = BigInt(col.totalVolume || '0');
 
                       return (
-                        <tr key={item.txid} className="cursor-pointer">
+                        <tr key={col.slug} className="cursor-pointer">
                           <td className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{i + 1}</td>
                           <td>
-                            <Link href={isAuction ? `/auction/${item.txid}` : `/nft/${item.txid}`}
-                              className="flex items-center gap-3">
+                            <Link href={`/collection/${col.slug}`} className="flex items-center gap-3">
                               <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0"
                                 style={{ background: 'var(--bg-hover)' }}>
-                                {item.metadata?.image ? (
+                                {col.image ? (
                                   <Image
-                                    src={ipfsToHttp(item.metadata.image)}
-                                    alt={item.metadata?.name || 'NFT'}
+                                    src={ipfsToHttp(col.image)}
+                                    alt={col.name}
                                     width={40}
                                     height={40}
                                     className="w-full h-full object-cover"
@@ -276,33 +248,33 @@ export default function HomePage() {
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-xs font-bold"
                                     style={{ color: 'var(--accent)' }}>
-                                    {item.tokenCategory?.slice(0, 2)?.toUpperCase() || 'NK'}
+                                    {col.name?.slice(0, 2)?.toUpperCase() || 'NK'}
                                   </div>
                                 )}
                               </div>
                               <div>
                                 <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-                                  {item.metadata?.name || `Token #${item.tokenCategory?.slice(0, 8)}`}
+                                  {col.name}
                                 </div>
                                 <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                                  {shortenAddress(item.sellerAddress, 4)}
+                                  {shortenAddress(col.creatorAddress, 4)}
                                 </div>
                               </div>
                             </Link>
                           </td>
                           <td className="text-right">
                             <div className="text-sm font-mono" style={{ color: 'var(--accent)' }}>
-                              {formatBCH(item.price)}
+                              {floor > 0n ? formatBCH(floor) : '--'}
                             </div>
-                            {bchUsd > 0 && (
+                            {bchUsd > 0 && floor > 0n && (
                               <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                                {formatUSD(item.price, bchUsd)}
+                                {formatUSD(floor, bchUsd)}
                               </div>
                             )}
                           </td>
                           <td className="text-right hidden sm:table-cell">
                             <span className="text-sm font-mono" style={{ color: 'var(--text-secondary)' }}>
-                              {formatBCH(item.price * 9n / 10n)}
+                              {floor > 0n ? formatBCH(floor * 9n / 10n) : '--'}
                             </span>
                           </td>
                           <td className="text-right hidden md:table-cell">
@@ -313,16 +285,16 @@ export default function HomePage() {
                           </td>
                           <td className="text-right hidden md:table-cell">
                             <span className="text-sm font-mono" style={{ color: 'var(--text-secondary)' }}>
-                              {priceBCH.toFixed(4)} BCH
+                              {vol > 0n ? formatBCH(vol) : '--'}
                             </span>
                           </td>
                           <td className="text-right hidden lg:table-cell">
                             <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                              {item.sellerAddress ? '1' : '0'}
+                              {col.ownerCount}
                             </span>
                           </td>
                           <td className="text-right hidden sm:table-cell">
-                            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>1</span>
+                            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{col.totalSupply}</span>
                           </td>
                         </tr>
                       );
@@ -344,7 +316,7 @@ export default function HomePage() {
             </div>
 
             <div className="card overflow-hidden">
-              {allItems.length === 0 && !isLoading ? (
+              {collections.length === 0 && !isLoading ? (
                 <div className="p-8 text-center">
                   <Activity className="h-6 w-6 mx-auto mb-2" style={{ color: 'var(--text-muted)' }} />
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>No activity yet</div>
@@ -363,12 +335,12 @@ export default function HomePage() {
                   </div>
                 ))
               ) : (
-                allItems.slice(0, 10).map((item, i) => (
+                collections.slice(0, 10).flatMap((col) => col.items || []).slice(0, 10).map((item: any, i: number) => (
                   <div key={item.txid} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
                     <ActivityItem
-                      type={i % 3 === 0 ? 'sale' : i % 3 === 1 ? 'list' : 'bid'}
+                      type={item.listingType === 'auction' ? 'bid' : item.status === 'sold' ? 'sale' : 'list'}
                       item={item.metadata?.name || `Token #${item.tokenCategory?.slice(0, 6)}`}
-                      price={formatBCH(item.price)}
+                      price={formatBCH(BigInt(item.price || item.currentBid || item.minBid || '0'))}
                       time={`${(i + 1) * 3}m ago`}
                     />
                   </div>
