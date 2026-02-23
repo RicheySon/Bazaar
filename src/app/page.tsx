@@ -14,6 +14,15 @@ import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/
 const timeFilters = ['1h', '6h', '24h', '7d', '30d'] as const;
 type TimeFilter = typeof timeFilters[number];
 
+function timeAgo(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
 function MemphisDecoration() {
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.03]">
@@ -354,16 +363,20 @@ export default function HomePage() {
                   </div>
                 ))
               ) : (
-                collections.slice(0, 10).flatMap((col) => col.items || []).slice(0, 10).map((item: any, i: number) => (
-                  <div key={item.txid} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
-                    <ActivityItem
-                      type={item.listingType === 'auction' ? 'bid' : item.status === 'sold' ? 'sale' : 'list'}
-                      item={item.metadata?.name || `Token #${item.tokenCategory?.slice(0, 6)}`}
-                      price={formatBCH(BigInt(item.price || item.currentBid || item.minBid || '0'))}
-                      time={`${(i + 1) * 3}m ago`}
-                    />
-                  </div>
-                ))
+                collections
+                  .flatMap((col) => col.items || [])
+                  .sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0))
+                  .slice(0, 10)
+                  .map((item: any) => (
+                    <div key={item.txid} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
+                      <ActivityItem
+                        type={item.listingType === 'auction' ? 'bid' : item.status === 'sold' ? 'sale' : 'list'}
+                        item={item.metadata?.name || `Token #${item.tokenCategory?.slice(0, 6)}`}
+                        price={formatBCH(BigInt(item.price || item.currentBid || item.minBid || '0'))}
+                        time={timeAgo(item.createdAt || item.updatedAt || Date.now())}
+                      />
+                    </div>
+                  ))
               )}
             </div>
 

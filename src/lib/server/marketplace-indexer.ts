@@ -121,16 +121,14 @@ async function getBlockTimeMs(
       const time = parseBlockTimestamp(headerHex);
       if (time) {
         const ms = time * 1000;
-        blockTimeCache.set(height, ms);
+        blockTimeCache.set(height, ms); // only cache confirmed real timestamps
         return ms;
       }
     }
   } catch {
-    // ignore
+    // ignore — do NOT cache failures; next request will retry
   }
-  const fallback = Date.now();
-  blockTimeCache.set(height, fallback);
-  return fallback;
+  return Date.now();
 }
 
 function scriptHashFromLockingBytecode(bytecode: Uint8Array): string {
