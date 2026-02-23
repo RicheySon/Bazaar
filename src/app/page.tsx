@@ -128,15 +128,13 @@ export default function HomePage() {
     '30d': 30 * 24 * 60 * 60 * 1000,
   };
   const cutoff = Date.now() - timeWindowMs[timeFilter];
-  const trendingCollections = collections
+  const displayCollections = collections
     .map((col) => {
       const recentItems = (col.items || []).filter((item: any) => (item.createdAt || 0) >= cutoff);
       return { ...col, recentCount: recentItems.length };
     })
     .filter((col) => col.recentCount > 0)
     .sort((a, b) => b.recentCount - a.recentCount || Number(BigInt(b.floorPrice || '0') - BigInt(a.floorPrice || '0')));
-  // Fall back to all collections if nothing matches the window (e.g. no 1h activity)
-  const displayCollections = trendingCollections.length > 0 ? trendingCollections : collections;
 
   return (
     <div className="relative">
@@ -251,6 +249,21 @@ export default function HomePage() {
                         <Link href="/create" className="btn-primary inline-flex items-center gap-2 mt-4 text-xs">
                           Create NFT <ArrowUpRight className="h-3 w-3" />
                         </Link>
+                      </td>
+                    </tr>
+                  ) : displayCollections.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="text-center py-10">
+                        <div className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                          No activity in the last {timeFilter}
+                        </div>
+                        <button
+                          onClick={() => setTimeFilter('30d')}
+                          className="text-xs mt-2 underline"
+                          style={{ color: 'var(--accent)' }}
+                        >
+                          View all time
+                        </button>
                       </td>
                     </tr>
                   ) : (
