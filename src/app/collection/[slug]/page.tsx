@@ -6,10 +6,13 @@ import Image from 'next/image';
 import Link from 'next/link';
 import {
   Search, Grid3X3, LayoutList, Tag, Gavel, ExternalLink,
-  Users, TrendingUp, Package, ArrowLeft, Copy, Check
+  Users, TrendingUp, Package, ArrowLeft, Copy, Check, Zap
 } from 'lucide-react';
 import { NFTCard } from '@/components/nft/NFTCard';
+import { VerifiedBadge } from '@/components/nft/VerifiedBadge';
+import { SweepModal } from '@/components/nft/SweepModal';
 import { formatBCH, ipfsToHttp, shortenAddress, timeAgo } from '@/lib/utils';
+import { useWalletStore } from '@/lib/store/wallet-store';
 import type { NFTListing, AuctionListing } from '@/lib/types';
 
 function StatBox({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -32,6 +35,12 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<'items' | 'activity'>('items');
+  const [isVerified, setIsVerified] = useState(false);
+  const [sweepMode, setSweepMode] = useState(false);
+  const [selectedTxids, setSelectedTxids] = useState<Set<string>>(new Set());
+  const [isSweepModalOpen, setIsSweepModalOpen] = useState(false);
+
+  const { connectionType, wallet } = useWalletStore();
 
   useEffect(() => {
     const load = async (showLoading = false) => {
@@ -41,6 +50,15 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
         if (res.ok) {
           const data = await res.json();
           setCollection(data);
+          // BCMR verification check
+          const bcmrUrl = data.items?.[0]?.metadata?.bcmrUrl;
+          const category = data.tokenCategory;
+          if (bcmrUrl && category) {
+            fetch(`/api/bcmr?url=${encodeURIComponent(bcmrUrl)}&category=${encodeURIComponent(category)}`)
+              .then((r) => r.json())
+              .then(({ verified }) => setIsVerified(!!verified))
+              .catch(() => {});
+          }
         }
       } catch {
         // ignore
@@ -135,6 +153,22 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
     .filter((item: any) => item.status !== 'active')
     .sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
+  // Sweep helpers
+  const sweepableItems = allItems
+    .filter((i): i is NFTListing => i.listingType === 'fixed')
+    .sort((a, b) => Number(a.price - b.price));
+  const selectedListings = sweepableItems.filter((i) => selectedTxids.has(i.txid));
+  const sweepTotal = selectedListings.reduce((s, l) => s + l.price, 0n);
+  const selectNCheapest = (n: number) =>
+    setSelectedTxids(new Set(sweepableItems.slice(0, n).map((l) => l.txid)));
+  const toggleItem = (txid: string) =>
+    setSelectedTxids((prev) => {
+      const next = new Set(prev);
+      if (next.has(txid)) next.delete(txid);
+      else next.add(txid);
+      return next;
+    });
+
   const filtered = allItems
     .filter((item) => {
       if (filter === 'fixed' && item.listingType !== 'fixed') return false;
@@ -175,9 +209,12 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
             )}
           </div>
           <div className="mb-1">
-            <h1 className="text-xl sm:text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
-              {collection.name}
-            </h1>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl sm:text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+                {collection.name}
+              </h1>
+              {isVerified && <VerifiedBadge size="md" />}
+            </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>by</span>
               <button
@@ -236,6 +273,50 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
 
         {activeTab === 'items' && (
           <>
+            {/* Sweep Mode toolbar */}
+            {sweepableItems.length > 0 && connectionType !== 'walletconnect' && (
+              <div className="flex items-center gap-2 mb-3 flex-wrap">
+                <button
+                  onClick={() => { setSweepMode((s) => !s); setSelectedTxids(new Set()); }}
+                  className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                    sweepMode
+                      ? 'text-white'
+                      : 'border hover:border-[var(--accent)] hover:text-[var(--accent)]'
+                  }`}
+                  style={sweepMode
+                    ? { background: 'var(--accent)' }
+                    : { borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  {sweepMode ? 'Exit Sweep' : 'Sweep Mode'}
+                </button>
+                {sweepMode && (
+                  <>
+                    {([5, 10, 20] as const).filter((n) => sweepableItems.length >= n).map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => selectNCheapest(n)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                        style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                      >
+                        {n} Cheapest
+                      </button>
+                    ))}
+                    {selectedTxids.size > 0 && (
+                      <button
+                        onClick={() => setIsSweepModalOpen(true)}
+                        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium text-white ml-auto"
+                        style={{ background: 'var(--accent)' }}
+                      >
+                        <Zap className="h-3.5 w-3.5" />
+                        Sweep {selectedTxids.size} — {formatBCH(sweepTotal)}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Toolbar */}
             <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <div className="relative flex-1">
@@ -306,7 +387,26 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
             ) : viewMode === 'grid' ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 mb-6">
                 {filtered.map((item, i) => (
-                  <NFTCard key={item.txid} listing={item} index={i} />
+                  <div key={item.txid} className={`relative ${sweepMode && item.listingType === 'auction' ? 'opacity-40' : ''}`}>
+                    <NFTCard listing={item} index={i} />
+                    {sweepMode && item.listingType === 'fixed' && (
+                      <div
+                        className="absolute inset-0 cursor-pointer rounded-xl"
+                        onClick={() => toggleItem(item.txid)}
+                      >
+                        {selectedTxids.has(item.txid) && (
+                          <div className="absolute inset-0 rounded-xl ring-2 ring-[var(--accent)] pointer-events-none" />
+                        )}
+                        <div className={`absolute top-2 right-2 w-5 h-5 rounded border-2 flex items-center justify-center ${
+                          selectedTxids.has(item.txid)
+                            ? 'border-[var(--accent)]'
+                            : 'border-white/60'
+                        }`} style={selectedTxids.has(item.txid) ? { background: 'var(--accent)' } : { background: 'rgba(0,0,0,0.5)' }}>
+                          {selectedTxids.has(item.txid) && <Check className="h-2.5 w-2.5 text-white" />}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             ) : (
@@ -314,6 +414,7 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
                 <table className="data-table">
                   <thead>
                     <tr>
+                      {sweepMode && <th className="w-10" />}
                       <th>Item</th>
                       <th className="text-right">Price</th>
                       <th className="text-right hidden sm:table-cell">Top Bid</th>
@@ -323,7 +424,20 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
                   </thead>
                   <tbody>
                     {filtered.map((item) => (
-                      <tr key={item.txid}>
+                      <tr key={item.txid} className={sweepMode && item.listingType === 'auction' ? 'opacity-40' : ''}>
+                        {sweepMode && (
+                          <td>
+                            {item.listingType === 'fixed' && (
+                              <input
+                                type="checkbox"
+                                checked={selectedTxids.has(item.txid)}
+                                onChange={() => toggleItem(item.txid)}
+                                className="w-4 h-4 cursor-pointer"
+                                style={{ accentColor: 'var(--accent)' }}
+                              />
+                            )}
+                          </td>
+                        )}
                         <td>
                           <Link href={item.listingType === 'auction' ? `/auction/${item.txid}` : `/nft/${item.txid}`}
                             className="flex items-center gap-3">
@@ -427,6 +541,15 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
           </div>
         )}
       </div>
+
+      {/* Sweep Modal */}
+      <SweepModal
+        isOpen={isSweepModalOpen}
+        onClose={() => { setIsSweepModalOpen(false); setSweepMode(false); setSelectedTxids(new Set()); }}
+        listings={selectedListings}
+        buyerAddress={wallet?.address || ''}
+        onComplete={() => { setSweepMode(false); setSelectedTxids(new Set()); }}
+      />
     </div>
   );
 }

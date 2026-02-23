@@ -156,14 +156,83 @@ function CodeBlock({ code, lang = 'typescript' }: { code: string; lang?: string 
   );
 }
 
+const sdkExamples = {
+  initClient: `import { NexusClient } from './nexus-sdk/src';
+
+// Same-origin (Bazaar UI) — no base URL needed
+const nexus = new NexusClient();
+
+// Cross-origin — point at your Bazaar deployment
+const nexus = new NexusClient('https://bazaar-three-gamma.vercel.app');
+
+// All methods return plain objects with string satoshi amounts
+// Convert to BigInt when doing arithmetic: BigInt(listing.price)`,
+
+  fetchFloor: `const nexus = new NexusClient();
+
+// Get floor price (returns BigInt satoshis, or null)
+const floor = await nexus.getFloorPrice('pixel-punks');
+if (floor !== null) {
+  console.log('Floor:', Number(floor) / 1e8, 'BCH');
+}
+
+// Get all active fixed-price listings, cheapest first
+const listings = await nexus.getListings('pixel-punks');
+console.log('Cheapest listing:', listings[0]?.metadata?.name);
+console.log('Price:', listings[0]?.price, 'sats');
+
+// Get full collection stats
+const col = await nexus.getCollection('pixel-punks');
+console.log('Total supply:', col?.totalSupply);
+console.log('Owners:', col?.ownerCount);`,
+
+  buyButton: `// Embed a "Buy Now" button in your own React app.
+// Calls the Bazaar API — no BCH library needed in your frontend.
+
+async function buyNFT(listingTxid: string, buyerKey: string, buyerAddress: string) {
+  const res = await fetch('/api/sweep', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      listings: [await nexus.getListing(listingTxid)].map(l => ({
+        txid: l!.txid, tokenCategory: l!.tokenCategory,
+        price: l!.price, seller: l!.seller, sellerPkh: l!.sellerPkh,
+        creator: l!.creator, creatorPkh: l!.creatorPkh,
+        commitment: l!.commitment, royaltyBasisPoints: l!.royaltyBasisPoints,
+      }]),
+      privateKeyHex: buyerKey,
+      buyerAddress,
+    }),
+  });
+  const { results } = await res.json();
+  return results[0]; // { success, purchaseTxid?, error? }
+}`,
+
+  activity: `const nexus = new NexusClient();
+
+// Global activity feed (all collections)
+const globalFeed = await nexus.getActivity();
+globalFeed.slice(0, 5).forEach(sale => {
+  console.log(sale.metadata?.name, 'sold for', sale.price, 'sats');
+});
+
+// Collection-specific activity
+const colFeed = await nexus.getActivity('pixel-punks');
+console.log('Recent sales in Pixel Punks:', colFeed.length);`,
+};
+
+type SdkExampleKey = keyof typeof sdkExamples;
+
 export default function BuildPage() {
-  const [activeTab, setActiveTab] = useState<'api' | 'contracts' | 'explorer'>('api');
+  const [activeTab, setActiveTab] = useState<'api' | 'contracts' | 'explorer' | 'sdk'>('api');
   const [activeExample, setActiveExample] = useState<ExampleKey>('fetchListings');
+  const [activeSdkExample, setActiveSdkExample] = useState<SdkExampleKey>('initClient');
 
   const tabs = [
     { id: 'api' as const,       label: 'REST API',      icon: Terminal },
     { id: 'explorer' as const,  label: 'API Explorer',  icon: Globe },
     { id: 'contracts' as const, label: 'Contracts',     icon: FileCode },
+    { id: 'sdk' as const,       label: 'Nexus SDK',     icon: Package },
   ];
 
   const exampleMenu: [ExampleKey, string][] = [
@@ -191,11 +260,12 @@ export default function BuildPage() {
         </div>
 
         {/* Feature cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           {[
             { icon: Terminal,  title: 'REST API',    desc: 'HTTP endpoints for all marketplace data and actions', color: 'var(--accent)' },
             { icon: Globe,     title: 'No Auth',     desc: 'Public read endpoints — no API key required',         color: 'var(--accent-blue)' },
             { icon: Shield,    title: 'CashScript',  desc: 'Open-source contracts for atomic swaps and auctions', color: 'var(--accent-purple)' },
+            { icon: Package,   title: 'Nexus SDK',   desc: 'TypeScript client — embed floor prices & buy buttons in any app', color: 'var(--accent-orange)' },
           ].map(({ icon: Icon, title, desc, color }) => (
             <div key={title} className="card p-4">
               <div className="flex items-center gap-3 mb-2">
@@ -368,6 +438,101 @@ export default function BuildPage() {
   ],
   "total": 2
 }`} />
+            </div>
+          </div>
+        )}
+
+        {/* Nexus SDK Tab */}
+        {activeTab === 'sdk' && (
+          <div className="space-y-6">
+            {/* Intro */}
+            <div className="card p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Package className="h-4 w-4" style={{ color: 'var(--accent-orange)' }} />
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  NexusClient — TypeScript SDK
+                </h3>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-mono"
+                  style={{ background: 'color-mix(in srgb, var(--accent-orange) 12%, transparent)', color: 'var(--accent-orange)' }}>
+                  v1.0
+                </span>
+              </div>
+              <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                Zero-dependency TypeScript client. Wraps all BAZAAR REST endpoints. No blockchain imports —
+                safe to embed in any React, Vue, or vanilla JS app. Build floor price trackers,
+                buy-now buttons, or full marketplaces on top of BAZAAR infrastructure.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {[
+                  'getCollections()',
+                  'getCollection(slug)',
+                  'getListings(slug)',
+                  'getFloorPrice(slug)',
+                  'getListing(id)',
+                  'getActivity(slug?)',
+                ].map((m) => (
+                  <div key={m} className="px-2.5 py-1.5 rounded-lg text-xs font-mono"
+                    style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}>
+                    {m}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Examples */}
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              <div className="lg:col-span-1">
+                <div className="card p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider px-2 py-1.5"
+                    style={{ color: 'var(--text-muted)' }}>
+                    Examples
+                  </div>
+                  {([
+                    ['initClient', 'Setup & Init'],
+                    ['fetchFloor', 'Floor Price & Listings'],
+                    ['buyButton',  'Buy Now Button'],
+                    ['activity',   'Activity Feed'],
+                  ] as [SdkExampleKey, string][]).map(([key, label]) => (
+                    <button key={key} onClick={() => setActiveSdkExample(key)}
+                      className="w-full text-left px-3 py-2 rounded-lg text-xs transition-colors"
+                      style={{
+                        color: activeSdkExample === key ? 'var(--text-primary)' : 'var(--text-secondary)',
+                        background: activeSdkExample === key ? 'var(--bg-hover)' : 'transparent',
+                        fontWeight: activeSdkExample === key ? 600 : 400,
+                      }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="card p-4 mt-4">
+                  <div className="text-xs font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                    Source
+                  </div>
+                  <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
+                    Full TypeScript source in the repo.
+                  </p>
+                  <code className="text-[10px] block px-2 py-1.5 rounded font-mono"
+                    style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
+                    nexus-sdk/src/index.ts
+                  </code>
+                </div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <CodeBlock code={sdkExamples[activeSdkExample]} />
+                {activeSdkExample === 'buyButton' && (
+                  <div className="mt-4 card p-4 text-xs"
+                    style={{ borderColor: 'var(--accent-orange)', background: 'rgba(255,165,0,0.05)' }}>
+                    <span className="font-semibold" style={{ color: 'var(--accent-orange)' }}>Note: </span>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      The <code className="font-mono">/api/sweep</code> endpoint handles sequential multi-buy.
+                      Pass <code className="font-mono">privateKeyHex</code> from the buyer's wallet.
+                      For WalletConnect users, each transaction requires individual signing approval.
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

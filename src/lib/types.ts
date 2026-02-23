@@ -9,6 +9,7 @@ export interface NFTMetadata {
   createdAt?: number;
   collection?: string;       // Collection name (groups multiple NFTs)
   collectionImage?: string;  // ipfs:// URI for collection thumbnail
+  bcmrUrl?: string;          // Bitcoin Cash Metadata Registry URL for verified status
 }
 
 export interface Collection {
