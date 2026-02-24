@@ -8,6 +8,7 @@ import {
   Tag, Gavel, ArrowLeft, RefreshCw, Coins
 } from 'lucide-react';
 import { NFTGrid } from '@/components/nft/NFTGrid';
+import { ListNFTModal, type WalletNFT } from '@/components/nft/ListNFTModal';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { formatBCH, shortenAddress } from '@/lib/utils';
 import { fetchWalletData, fetchMarketplaceListings } from '@/lib/bch/api-client';
@@ -30,6 +31,7 @@ export default function ProfilePage() {
   const [activeTab, setActiveTab] = useState<ProfileTab>('owned');
   const [copied, setCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [listingNft, setListingNft] = useState<WalletNFT | null>(null);
 
   const loadProfile = async () => {
     setIsLoading(true);
@@ -207,9 +209,73 @@ export default function ProfilePage() {
           ))}
         </div>
 
-        <NFTGrid listings={filteredNfts} isLoading={isLoading}
-          emptyMessage={activeTab === 'owned' ? 'No NFTs owned yet' : activeTab === 'listed' ? 'No active listings' : 'No active auctions'} />
+        {/* Owned tab on own profile — custom grid with List button */}
+        {activeTab === 'owned' && isOwnProfile ? (
+          isLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="card overflow-hidden animate-pulse">
+                  <div className="aspect-square" style={{ background: 'var(--bg-secondary)' }} />
+                  <div className="p-3 space-y-2">
+                    <div className="h-3 rounded" style={{ background: 'var(--bg-hover)', width: '70%' }} />
+                    <div className="h-7 rounded" style={{ background: 'var(--bg-hover)' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : nfts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 gap-3">
+              <ImageIcon className="h-10 w-10" style={{ color: 'var(--text-muted)' }} />
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No NFTs owned yet</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              {nfts.map((nft) => (
+                <div key={nft.txid} className="card overflow-hidden flex flex-col">
+                  <div className="aspect-square flex items-center justify-center"
+                    style={{ background: 'var(--bg-secondary)' }}>
+                    <ImageIcon className="h-8 w-8" style={{ color: 'var(--text-muted)' }} />
+                  </div>
+                  <div className="p-3 flex flex-col gap-2 flex-1">
+                    <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
+                      {nft.tokenCategory.slice(0, 16)}…
+                    </div>
+                    <button
+                      onClick={() => setListingNft({
+                        txid: nft.txid,
+                        vout: nft.vout,
+                        satoshis: nft.satoshis.toString(),
+                        tokenCategory: nft.tokenCategory,
+                        nftCommitment: nft.commitment,
+                        nftCapability: 'none',
+                      })}
+                      className="mt-auto w-full py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                      style={{ background: 'var(--accent)' }}
+                    >
+                      <Tag className="h-3 w-3" />
+                      List on Bazaar
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
+          <NFTGrid listings={filteredNfts} isLoading={isLoading}
+            emptyMessage={activeTab === 'owned' ? 'No NFTs owned yet' : activeTab === 'listed' ? 'No active listings' : 'No active auctions'} />
+        )}
       </div>
+
+      {/* List NFT Modal */}
+      {listingNft && (
+        <ListNFTModal
+          isOpen={!!listingNft}
+          onClose={() => setListingNft(null)}
+          nft={listingNft}
+          ownerAddress={address}
+          onComplete={() => { setListingNft(null); loadProfile(); }}
+        />
+      )}
     </div>
   );
 }
