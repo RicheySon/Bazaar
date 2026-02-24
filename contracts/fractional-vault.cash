@@ -1,0 +1,54 @@
+// BAZAAR - Fractionalized NFT Vault Contract
+// BCH Chipnet - CashScript v0.10+
+// Holds an original NFT escrowed for fractional ownership.
+// Shares are FTs of sharesCategory; a mutable tracking NFT (same category)
+// is held by the companion FractionalClaims covenant.
+//
+// Two exit paths:
+//   redeemAll — burn the full 1,000,000 FT supply → receive original NFT
+//   buyout    — pay ≥ reserveSats → claims covenant receives BCH, buyer receives NFT
+
+pragma cashscript >=0.10.0;
+
+contract FractionalVault(
+    bytes32 sharesCategory,   // token category of the share FTs + tracking NFT
+    int totalShares,          // 1000000
+    int reserveSats,          // fixed buyout price in satoshis
+    bytes32 claimsScriptHash  // sha256d of FractionalClaims redeem script (for P2SH32)
+) {
+    // Burn 100% of shares → receive the original NFT back
+    // Input[0]: this vault UTXO (holds original NFT)
+    // Input[1]: FT UTXO carrying all totalShares of sharesCategory
+    // Output[0]: original NFT to redeemer P2PKH
+    function redeemAll(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes20 pkh = hash160(pk);
+
+        // Input[1] must carry the full share supply of sharesCategory
+        require(tx.inputs[1].tokenCategory.split(32)[0] == sharesCategory);
+        require(tx.inputs[1].tokenAmount == totalShares);
+
+        // Output[0] must carry the original NFT to the redeemer
+        bytes vaultNftCat = tx.inputs[this.activeInputIndex].tokenCategory;
+        require(tx.outputs[0].tokenCategory == vaultNftCat);
+        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(pkh));
+    }
+
+    // Pay ≥ reserve → get original NFT; proceeds locked into FractionalClaims
+    // Input[0]: this vault UTXO
+    // Input[1]: claims covenant UTXO (carries mutable tracking NFT)
+    // Input[2+]: buyer BCH UTXOs
+    // Output[0]: new claims UTXO (P2SH32, ≥ reserveSats, mutable NFT preserved)
+    // Output[1]: original NFT to buyer P2PKH
+    function buyout(bytes20 buyerPkh) {
+        // Output[0]: claims contract must receive at least the full reserve
+        bytes35 claimsLocking = new LockingBytecodeP2SH32(claimsScriptHash);
+        require(tx.outputs[0].lockingBytecode == claimsLocking);
+        require(tx.outputs[0].value >= reserveSats);
+
+        // Output[1]: original NFT delivered to buyer
+        bytes vaultNftCat = tx.inputs[this.activeInputIndex].tokenCategory;
+        require(tx.outputs[1].tokenCategory == vaultNftCat);
+        require(tx.outputs[1].lockingBytecode == new LockingBytecodeP2PKH(buyerPkh));
+    }
+}

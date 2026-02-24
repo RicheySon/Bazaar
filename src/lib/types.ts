@@ -169,3 +169,29 @@ export interface NFTDrop {
 }
 
 export type DropStatus = 'upcoming' | 'presale' | 'live' | 'ended' | 'sold-out';
+
+// ─── Fractionalized NFTs ──────────────────────────────────────────────────────
+
+export interface FractionalVaultInfo {
+  sharesCategory: string;   // 32-byte hex (genesis input txid = shares token category)
+  claimsScriptHash: string; // 32-byte hex (sha256d of claims redeem script)
+  totalShares: string;      // "1000000" (string for JSON safety)
+  reserveSats: string;      // fixed buyout price in satoshis (string)
+  vaultAddress: string;     // P2SH32 token-capable address holding the original NFT
+  claimsAddress: string;    // P2SH32 token-capable address holding BCH proceeds
+  nftCategory: string;      // token category of the original fractionalized NFT
+  nftCommitment: string;    // original NFT commitment hex
+  nftCapability: string;    // 'none' | 'mutable' | 'minting'
+  nftMetadata?: NFTMetadata;
+  createdAt?: number;       // unix timestamp
+}
+
+export interface VaultStatus {
+  active: boolean;          // vault UTXO exists (NFT not yet bought out)
+  boughtOut: boolean;       // vault gone, claims holds BCH proceeds
+  claimsHasBch: boolean;
+  remainingShares: string;  // string for JSON-safe serialization
+  remainingSats: string;
+  totalShares: string;
+  reserveSats: string;
+}

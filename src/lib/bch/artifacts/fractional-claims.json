@@ -1,0 +1,106 @@
+{
+  "contractName": "FractionalClaims",
+  "constructorInputs": [
+    {
+      "name": "sharesCategory",
+      "type": "bytes32"
+    }
+  ],
+  "abi": [
+    {
+      "name": "receiveProceeds",
+      "inputs": []
+    },
+    {
+      "name": "claim",
+      "inputs": [
+        {
+          "name": "burnAmount",
+          "type": "int"
+        },
+        {
+          "name": "claimantPkh",
+          "type": "bytes20"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_OVER OP_0 OP_NUMEQUAL OP_IF OP_0 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_INPUTINDEX OP_UTXOVALUE OP_GREATERTHAN OP_NIP OP_NIP OP_ELSE OP_SWAP OP_1 OP_NUMEQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_BIN2NUM OP_INPUTINDEX OP_UTXOVALUE OP_1 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_3 OP_ROLL OP_EQUALVERIFY OP_1 OP_UTXOTOKENAMOUNT OP_3 OP_PICK OP_NUMEQUALVERIFY OP_2 OP_PICK OP_0 OP_GREATERTHAN OP_VERIFY OP_2 OP_PICK OP_2 OP_PICK OP_LESSTHANOREQUAL OP_VERIFY OP_2 OP_PICK OP_OVER OP_MUL OP_2 OP_PICK OP_DIV OP_2SWAP OP_SWAP OP_SUB OP_ROT OP_2 OP_PICK OP_SUB OP_OVER OP_0 OP_GREATERTHAN OP_IF OP_0 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCOMMITMENT OP_2 OP_PICK OP_8 OP_NUM2BIN OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_OVER OP_GREATERTHANOREQUAL OP_VERIFY OP_1 OP_OUTPUTBYTECODE 76a914 OP_5 OP_PICK OP_CAT 88ac OP_CAT OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_3 OP_PICK OP_GREATERTHANOREQUAL OP_VERIFY OP_ELSE OP_0 OP_OUTPUTBYTECODE 76a914 OP_5 OP_PICK OP_CAT 88ac OP_CAT OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_3 OP_PICK OP_GREATERTHANOREQUAL OP_VERIFY OP_ENDIF OP_2DROP OP_2DROP OP_1 OP_ENDIF",
+  "source": "// BAZAAR - Fractionalized NFT Claims Covenant\r\n// BCH Chipnet - CashScript v0.10+\r\n// Holds BCH proceeds after a vault buyout and a mutable tracking NFT whose\r\n// commitment encodes `bytes8(remainingShares)` (8-byte LE int).\r\n//\r\n// Two paths:\r\n//   receiveProceeds — atomic companion to vault buyout; BCH added, state unchanged\r\n//   claim           — burn X shares → receive floor(X/remaining * remainingSats) BCH\r\n\r\npragma cashscript >=0.10.0;\r\n\r\ncontract FractionalClaims(\r\n    bytes32 sharesCategory  // must match the vault's sharesCategory\r\n) {\r\n    // Accept buyout BCH from the vault buyout transaction.\r\n    // Called in the same tx as vault.buyout(), so both constraints are satisfied atomically.\r\n    // Input[this]: claims UTXO (mutable tracking NFT, dust BCH)\r\n    // Output[0]:   new claims UTXO (same covenant, same NFT state, more BCH)\r\n    function receiveProceeds() {\r\n        require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\r\n        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\r\n        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\r\n        require(tx.outputs[0].value > tx.inputs[this.activeInputIndex].value);\r\n    }\r\n\r\n    // Burn burnAmount shares → receive pro-rata BCH payout.\r\n    // Input[0]:  this claims UTXO (mutable NFT + BCH proceeds)\r\n    // Input[1]:  claimant's FT UTXO (tokenAmount == burnAmount, sharesCategory)\r\n    // Input[2+]: claimant's BCH UTXOs for fees (optional)\r\n    // Output[0]: updated claims UTXO (if shares remain) OR payout (if last claim)\r\n    // Output[1]: payout to claimant (if shares remain)\r\n    function claim(int burnAmount, bytes20 claimantPkh) {\r\n        // Read state: remainingShares from mutable NFT commitment (8-byte LE int)\r\n        int remainingShares = int(tx.inputs[this.activeInputIndex].nftCommitment);\r\n        // remainingSats = BCH held by this UTXO (native introspection)\r\n        int remainingSats = tx.inputs[this.activeInputIndex].value;\r\n\r\n        // Input[1]: claimant provides FT shares of the correct category\r\n        require(tx.inputs[1].tokenCategory.split(32)[0] == sharesCategory);\r\n        require(tx.inputs[1].tokenAmount == burnAmount);\r\n        require(burnAmount > 0);\r\n        require(burnAmount <= remainingShares);\r\n\r\n        // Pro-rata payout (floor division — any remainder stays in claims)\r\n        int payout = burnAmount * remainingSats / remainingShares;\r\n        int newRemainingShares = remainingShares - burnAmount;\r\n        int newRemainingSats = remainingSats - payout;\r\n\r\n        if (newRemainingShares > 0) {\r\n            // Shares remain: recreate claims UTXO with updated state\r\n            require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\r\n            require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\r\n            require(tx.outputs[0].nftCommitment == bytes8(newRemainingShares));\r\n            require(tx.outputs[0].value >= newRemainingSats);\r\n            // Claimant receives payout in output[1]\r\n            require(tx.outputs[1].lockingBytecode == new LockingBytecodeP2PKH(claimantPkh));\r\n            require(tx.outputs[1].value >= payout);\r\n        } else {\r\n            // Last claim: claims UTXO fully drained, all BCH to claimant\r\n            require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(claimantPkh));\r\n            require(tx.outputs[0].value >= payout);\r\n        }\r\n    }\r\n}\r\n",
+  "debug": {
+    "bytecode": "78009c6300cdc0c78800d1c0ce8800d2c0cf8800ccc0c6a07777677c519dc0cf81c0c651ce01207f75537a8851d053799d527900a06952795279a16952797895527996727c947b5279947800a06300cdc0c78800d1c0ce8800d2527958808800cc78a26951cd0376a91455797e0288ac7e8851cc5379a2696700cd0376a91455797e0288ac7e8800cc5379a269686d6d5168",
+    "sourceMap": "19:4:24:5;;;;20:27:20:28;:16::45:1;:59::80:0;:49::97:1;:8::99;21:27:21:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;22:27:22:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;23:27:23:28:0;:16::35:1;:48::69:0;:38::76:1;:8::78;19:4:24:5;;;32::63::0;;;34:44:34:65;:34::80:1;:30::81;36:38:36:59:0;:28::66:1;39:26:39:27:0;:16::42:1;:49::51:0;:16::52:1;:::55;:59::73:0;;:8::75:1;40:26:40:27:0;:16::40:1;:44::54:0;;:8::56:1;41:16:41:26:0;;:29::30;:16:::1;:8::32;42:16:42:26:0;;:30::45;;:16:::1;:8::47;45:21:45:31:0;;:34::47;:21:::1;:50::65:0;;:21:::1;46:33:46:61:0;;::::1;47:31:47:44:0;:47::53;;:31:::1;49:12:49:30:0;:33::34;:12:::1;:36:58:9:0;51:31:51:32;:20::49:1;:63::84:0;:53::101:1;:12::103;52:31:52:32:0;:20::47:1;:61::82:0;:51::97:1;:12::99;53:31:53:32:0;:20::47:1;:58::76:0;;:51::77:1;;:12::79;54:31:54:32:0;:20::39:1;:43::59:0;:20:::1;:12::61;56:31:56:32:0;:20::49:1;:53::90:0;:78::89;;:53::90:1;;;:12::92;57:31:57:32:0;:20::39:1;:43::49:0;;:20:::1;:12::51;58:15:62:9:0;60:31:60:32;:20::49:1;:53::90:0;:78::89;;:53::90:1;;;:12::92;61:31:61:32:0;:20::39:1;:43::49:0;;:20:::1;:12::51;58:15:62:9;32:4:63:5;;;12:0:64:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 9,
+        "line": 20
+      },
+      {
+        "ip": 14,
+        "line": 21
+      },
+      {
+        "ip": 19,
+        "line": 22
+      },
+      {
+        "ip": 25,
+        "line": 23
+      },
+      {
+        "ip": 43,
+        "line": 39
+      },
+      {
+        "ip": 48,
+        "line": 40
+      },
+      {
+        "ip": 53,
+        "line": 41
+      },
+      {
+        "ip": 59,
+        "line": 42
+      },
+      {
+        "ip": 82,
+        "line": 51
+      },
+      {
+        "ip": 87,
+        "line": 52
+      },
+      {
+        "ip": 94,
+        "line": 53
+      },
+      {
+        "ip": 99,
+        "line": 54
+      },
+      {
+        "ip": 108,
+        "line": 56
+      },
+      {
+        "ip": 114,
+        "line": 57
+      },
+      {
+        "ip": 124,
+        "line": 60
+      },
+      {
+        "ip": 130,
+        "line": 61
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-02-24T20:29:19.029Z"
+}

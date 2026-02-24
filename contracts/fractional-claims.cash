@@ -1,0 +1,64 @@
+// BAZAAR - Fractionalized NFT Claims Covenant
+// BCH Chipnet - CashScript v0.10+
+// Holds BCH proceeds after a vault buyout and a mutable tracking NFT whose
+// commitment encodes `bytes8(remainingShares)` (8-byte LE int).
+//
+// Two paths:
+//   receiveProceeds — atomic companion to vault buyout; BCH added, state unchanged
+//   claim           — burn X shares → receive floor(X/remaining * remainingSats) BCH
+
+pragma cashscript >=0.10.0;
+
+contract FractionalClaims(
+    bytes32 sharesCategory  // must match the vault's sharesCategory
+) {
+    // Accept buyout BCH from the vault buyout transaction.
+    // Called in the same tx as vault.buyout(), so both constraints are satisfied atomically.
+    // Input[this]: claims UTXO (mutable tracking NFT, dust BCH)
+    // Output[0]:   new claims UTXO (same covenant, same NFT state, more BCH)
+    function receiveProceeds() {
+        require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
+        require(tx.outputs[0].value > tx.inputs[this.activeInputIndex].value);
+    }
+
+    // Burn burnAmount shares → receive pro-rata BCH payout.
+    // Input[0]:  this claims UTXO (mutable NFT + BCH proceeds)
+    // Input[1]:  claimant's FT UTXO (tokenAmount == burnAmount, sharesCategory)
+    // Input[2+]: claimant's BCH UTXOs for fees (optional)
+    // Output[0]: updated claims UTXO (if shares remain) OR payout (if last claim)
+    // Output[1]: payout to claimant (if shares remain)
+    function claim(int burnAmount, bytes20 claimantPkh) {
+        // Read state: remainingShares from mutable NFT commitment (8-byte LE int)
+        int remainingShares = int(tx.inputs[this.activeInputIndex].nftCommitment);
+        // remainingSats = BCH held by this UTXO (native introspection)
+        int remainingSats = tx.inputs[this.activeInputIndex].value;
+
+        // Input[1]: claimant provides FT shares of the correct category
+        require(tx.inputs[1].tokenCategory.split(32)[0] == sharesCategory);
+        require(tx.inputs[1].tokenAmount == burnAmount);
+        require(burnAmount > 0);
+        require(burnAmount <= remainingShares);
+
+        // Pro-rata payout (floor division — any remainder stays in claims)
+        int payout = burnAmount * remainingSats / remainingShares;
+        int newRemainingShares = remainingShares - burnAmount;
+        int newRemainingSats = remainingSats - payout;
+
+        if (newRemainingShares > 0) {
+            // Shares remain: recreate claims UTXO with updated state
+            require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+            require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+            require(tx.outputs[0].nftCommitment == bytes8(newRemainingShares));
+            require(tx.outputs[0].value >= newRemainingSats);
+            // Claimant receives payout in output[1]
+            require(tx.outputs[1].lockingBytecode == new LockingBytecodeP2PKH(claimantPkh));
+            require(tx.outputs[1].value >= payout);
+        } else {
+            // Last claim: claims UTXO fully drained, all BCH to claimant
+            require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(claimantPkh));
+            require(tx.outputs[0].value >= payout);
+        }
+    }
+}

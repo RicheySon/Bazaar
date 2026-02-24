@@ -5,10 +5,11 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   Copy, Check, ExternalLink, Wallet, Image as ImageIcon,
-  Tag, Gavel, ArrowLeft, RefreshCw, Coins
+  Tag, Gavel, ArrowLeft, RefreshCw, Coins, Layers
 } from 'lucide-react';
 import { NFTGrid } from '@/components/nft/NFTGrid';
 import { ListNFTModal, type WalletNFT } from '@/components/nft/ListNFTModal';
+import { FractionalizeModal } from '@/components/nft/FractionalizeModal';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { formatBCH, shortenAddress } from '@/lib/utils';
 import { fetchWalletData, fetchMarketplaceListings } from '@/lib/bch/api-client';
@@ -32,6 +33,7 @@ export default function ProfilePage() {
   const [copied, setCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [listingNft, setListingNft] = useState<WalletNFT | null>(null);
+  const [fractionalizeNft, setFractionalizeNft] = useState<WalletNFT | null>(null);
 
   const loadProfile = async () => {
     setIsLoading(true);
@@ -240,21 +242,38 @@ export default function ProfilePage() {
                     <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
                       {nft.tokenCategory.slice(0, 16)}…
                     </div>
-                    <button
-                      onClick={() => setListingNft({
-                        txid: nft.txid,
-                        vout: nft.vout,
-                        satoshis: nft.satoshis.toString(),
-                        tokenCategory: nft.tokenCategory,
-                        nftCommitment: nft.commitment,
-                        nftCapability: 'none',
-                      })}
-                      className="mt-auto w-full py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
-                      style={{ background: 'var(--accent)' }}
-                    >
-                      <Tag className="h-3 w-3" />
-                      List on Bazaar
-                    </button>
+                    <div className="mt-auto flex flex-col gap-1.5">
+                      <button
+                        onClick={() => setListingNft({
+                          txid: nft.txid,
+                          vout: nft.vout,
+                          satoshis: nft.satoshis.toString(),
+                          tokenCategory: nft.tokenCategory,
+                          nftCommitment: nft.commitment,
+                          nftCapability: 'none',
+                        })}
+                        className="w-full py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                        style={{ background: 'var(--accent)' }}
+                      >
+                        <Tag className="h-3 w-3" />
+                        List on Bazaar
+                      </button>
+                      <button
+                        onClick={() => setFractionalizeNft({
+                          txid: nft.txid,
+                          vout: nft.vout,
+                          satoshis: nft.satoshis.toString(),
+                          tokenCategory: nft.tokenCategory,
+                          nftCommitment: nft.commitment,
+                          nftCapability: 'none',
+                        })}
+                        className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                        style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+                      >
+                        <Layers className="h-3 w-3" />
+                        Fractionalize
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -274,6 +293,18 @@ export default function ProfilePage() {
           nft={listingNft}
           ownerAddress={address}
           onComplete={() => { setListingNft(null); loadProfile(); }}
+        />
+      )}
+
+      {/* Fractionalize Modal */}
+      {fractionalizeNft && (
+        <FractionalizeModal
+          isOpen={!!fractionalizeNft}
+          onClose={() => setFractionalizeNft(null)}
+          nft={fractionalizeNft}
+          ownerAddress={address}
+          ownerTokenAddress={wallet?.tokenAddress || address}
+          onComplete={() => { setFractionalizeNft(null); loadProfile(); }}
         />
       )}
     </div>

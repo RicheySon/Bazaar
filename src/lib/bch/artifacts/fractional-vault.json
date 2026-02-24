@@ -1,0 +1,95 @@
+{
+  "contractName": "FractionalVault",
+  "constructorInputs": [
+    {
+      "name": "sharesCategory",
+      "type": "bytes32"
+    },
+    {
+      "name": "totalShares",
+      "type": "int"
+    },
+    {
+      "name": "reserveSats",
+      "type": "int"
+    },
+    {
+      "name": "claimsScriptHash",
+      "type": "bytes32"
+    }
+  ],
+  "abi": [
+    {
+      "name": "redeemAll",
+      "inputs": [
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "s",
+          "type": "sig"
+        }
+      ]
+    },
+    {
+      "name": "buyout",
+      "inputs": [
+        {
+          "name": "buyerPkh",
+          "type": "bytes20"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_4 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_6 OP_ROLL OP_6 OP_PICK OP_CHECKSIGVERIFY OP_5 OP_ROLL OP_HASH160 OP_1 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_ROT OP_EQUALVERIFY OP_1 OP_UTXOTOKENAMOUNT OP_ROT OP_NUMEQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_0 OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTBYTECODE 76a914 OP_ROT OP_CAT 88ac OP_CAT OP_EQUAL OP_NIP OP_NIP OP_NIP OP_ELSE OP_4 OP_ROLL OP_1 OP_NUMEQUALVERIFY aa20 OP_4 OP_ROLL OP_CAT 87 OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_3 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_1 OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY OP_1 OP_OUTPUTBYTECODE 76a914 OP_4 OP_ROLL OP_CAT 88ac OP_CAT OP_EQUAL OP_NIP OP_NIP OP_ENDIF",
+  "source": "// BAZAAR - Fractionalized NFT Vault Contract\r\n// BCH Chipnet - CashScript v0.10+\r\n// Holds an original NFT escrowed for fractional ownership.\r\n// Shares are FTs of sharesCategory; a mutable tracking NFT (same category)\r\n// is held by the companion FractionalClaims covenant.\r\n//\r\n// Two exit paths:\r\n//   redeemAll — burn the full 1,000,000 FT supply → receive original NFT\r\n//   buyout    — pay ≥ reserveSats → claims covenant receives BCH, buyer receives NFT\r\n\r\npragma cashscript >=0.10.0;\r\n\r\ncontract FractionalVault(\r\n    bytes32 sharesCategory,   // token category of the share FTs + tracking NFT\r\n    int totalShares,          // 1000000\r\n    int reserveSats,          // fixed buyout price in satoshis\r\n    bytes32 claimsScriptHash  // sha256d of FractionalClaims redeem script (for P2SH32)\r\n) {\r\n    // Burn 100% of shares → receive the original NFT back\r\n    // Input[0]: this vault UTXO (holds original NFT)\r\n    // Input[1]: FT UTXO carrying all totalShares of sharesCategory\r\n    // Output[0]: original NFT to redeemer P2PKH\r\n    function redeemAll(pubkey pk, sig s) {\r\n        require(checkSig(s, pk));\r\n        bytes20 pkh = hash160(pk);\r\n\r\n        // Input[1] must carry the full share supply of sharesCategory\r\n        require(tx.inputs[1].tokenCategory.split(32)[0] == sharesCategory);\r\n        require(tx.inputs[1].tokenAmount == totalShares);\r\n\r\n        // Output[0] must carry the original NFT to the redeemer\r\n        bytes vaultNftCat = tx.inputs[this.activeInputIndex].tokenCategory;\r\n        require(tx.outputs[0].tokenCategory == vaultNftCat);\r\n        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(pkh));\r\n    }\r\n\r\n    // Pay ≥ reserve → get original NFT; proceeds locked into FractionalClaims\r\n    // Input[0]: this vault UTXO\r\n    // Input[1]: claims covenant UTXO (carries mutable tracking NFT)\r\n    // Input[2+]: buyer BCH UTXOs\r\n    // Output[0]: new claims UTXO (P2SH32, ≥ reserveSats, mutable NFT preserved)\r\n    // Output[1]: original NFT to buyer P2PKH\r\n    function buyout(bytes20 buyerPkh) {\r\n        // Output[0]: claims contract must receive at least the full reserve\r\n        bytes35 claimsLocking = new LockingBytecodeP2SH32(claimsScriptHash);\r\n        require(tx.outputs[0].lockingBytecode == claimsLocking);\r\n        require(tx.outputs[0].value >= reserveSats);\r\n\r\n        // Output[1]: original NFT delivered to buyer\r\n        bytes vaultNftCat = tx.inputs[this.activeInputIndex].tokenCategory;\r\n        require(tx.outputs[1].tokenCategory == vaultNftCat);\r\n        require(tx.outputs[1].lockingBytecode == new LockingBytecodeP2PKH(buyerPkh));\r\n    }\r\n}\r\n",
+  "debug": {
+    "bytecode": "5479009c63567a5679ad557aa951ce01207f757b8851d07b9dc0ce00d18800cd0376a9147b7e0288ac7e8777777767547a519d02aa20547a7e01877e00cd8800cc537aa269c0ce51d18851cd0376a914547a7e0288ac7e87777768",
+    "sourceMap": "23:4:35:5;;;;;24:25:24:26;;:28::30;;:8::33:1;25:30:25:32:0;;:22::33:1;28:26:28:27:0;:16::42:1;:49::51:0;:16::52:1;:::55;:59::73:0;:8::75:1;29:26:29:27:0;:16::40:1;:44::55:0;:8::57:1;32:38:32:59:0;:28::74:1;33:27:33:28:0;:16::43:1;:8::60;34:27:34:28:0;:16::45:1;:49::78:0;:74::77;:49::78:1;;;:8::80;23:4:35:5;;;;43::53::0;;;;45:32:45:75;:58::74;;:32::75:1;;;46:27:46:28:0;:16::45:1;:8::64;47:27:47:28:0;:16::35:1;:39::50:0;;:16:::1;:8::52;50:38:50:59:0;:28::74:1;51:27:51:28:0;:16::43:1;:8::60;52:27:52:28:0;:16::45:1;:49::83:0;:74::82;;:49::83:1;;;:8::85;43:4:53:5;;13:0:54:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 13,
+        "line": 24
+      },
+      {
+        "ip": 23,
+        "line": 28
+      },
+      {
+        "ip": 27,
+        "line": 29
+      },
+      {
+        "ip": 32,
+        "line": 33
+      },
+      {
+        "ip": 41,
+        "line": 34
+      },
+      {
+        "ip": 57,
+        "line": 46
+      },
+      {
+        "ip": 63,
+        "line": 47
+      },
+      {
+        "ip": 68,
+        "line": 51
+      },
+      {
+        "ip": 78,
+        "line": 52
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-02-24T20:29:15.243Z"
+}
