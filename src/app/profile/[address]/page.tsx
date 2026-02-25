@@ -21,8 +21,9 @@ type ProfileTab = 'owned' | 'listed' | 'auctions';
 export default function ProfilePage() {
   const params = useParams();
   const address = decodeURIComponent(params.address as string);
-  const { wallet } = useWalletStore();
+  const { wallet, connectionType } = useWalletStore();
   const isOwnProfile = wallet?.address === address;
+  const canSignTx = connectionType !== 'walletconnect';
 
   const [balance, setBalance] = useState<bigint>(0n);
   const [nfts, setNfts] = useState<NFTListing[]>([]);
@@ -258,21 +259,23 @@ export default function ProfilePage() {
                         <Tag className="h-3 w-3" />
                         List on Bazaar
                       </button>
-                      <button
-                        onClick={() => setFractionalizeNft({
-                          txid: nft.txid,
-                          vout: nft.vout,
-                          satoshis: nft.satoshis.toString(),
-                          tokenCategory: nft.tokenCategory,
-                          nftCommitment: nft.commitment,
-                          nftCapability: 'none',
-                        })}
-                        className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
-                        style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
-                      >
-                        <Layers className="h-3 w-3" />
-                        Fractionalize
-                      </button>
+                      {canSignTx && (
+                        <button
+                          onClick={() => setFractionalizeNft({
+                            txid: nft.txid,
+                            vout: nft.vout,
+                            satoshis: nft.satoshis.toString(),
+                            tokenCategory: nft.tokenCategory,
+                            nftCommitment: nft.commitment,
+                            nftCapability: 'none',
+                          })}
+                          className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                          style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+                        >
+                          <Layers className="h-3 w-3" />
+                          Fractionalize
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

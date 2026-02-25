@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { X, Layers, Loader2, Check, ExternalLink, Info } from 'lucide-react';
 import { loadWallet, getPkhHex } from '@/lib/bch/wallet';
+import { useWalletStore } from '@/lib/store/wallet-store';
 import { bchToSatoshis, formatBCH } from '@/lib/utils';
 import Link from 'next/link';
 import type { WalletNFT } from '@/components/nft/ListNFTModal';
@@ -31,8 +32,13 @@ export function FractionalizeModal({
   const [txid, setTxid] = useState('');
   const [sharesCategory, setSharesCategory] = useState('');
   const [error, setError] = useState('');
+  const { connectionType } = useWalletStore();
 
   const handleFractionalize = async () => {
+    if (connectionType === 'walletconnect') {
+      setError('Fractionalize requires the built-in wallet. WalletConnect does not expose signing keys needed to build this transaction.');
+      return;
+    }
     const walletData = loadWallet();
     if (!walletData) {
       setError('Wallet not connected. Please connect your wallet first.');
