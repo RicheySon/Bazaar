@@ -1,7 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { use } from 'react';
+import { use, useEffect, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import {
@@ -11,9 +10,11 @@ import {
 import { NFTCard } from '@/components/nft/NFTCard';
 import { VerifiedBadge } from '@/components/nft/VerifiedBadge';
 import { SweepModal } from '@/components/nft/SweepModal';
+import { CollectionBidModal } from '@/components/nft/CollectionBidModal';
+import { CancelBidModal } from '@/components/nft/CancelBidModal';
 import { formatBCH, ipfsToHttp, shortenAddress, timeAgo } from '@/lib/utils';
 import { useWalletStore } from '@/lib/store/wallet-store';
-import type { NFTListing, AuctionListing } from '@/lib/types';
+import type { NFTListing, AuctionListing, CollectionBid } from '@/lib/types';
 
 function StatBox({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -23,6 +24,53 @@ function StatBox({ label, value, sub }: { label: string; value: string; sub?: st
       {sub && <span className="text-[11px] font-mono mt-0.5" style={{ color: 'var(--text-muted)' }}>{sub}</span>}
     </div>
   );
+}
+
+type PriceWallBucket = {
+  start: bigint;
+  end: bigint;
+  count: number;
+  sum: bigint;
+};
+
+function buildPriceWall(items: NFTListing[], bins = 12) {
+  if (items.length === 0) return null;
+  let min = items[0].price;
+  let max = items[0].price;
+  let total = 0n;
+  for (const item of items) {
+    if (item.price < min) min = item.price;
+    if (item.price > max) max = item.price;
+    total += item.price;
+  }
+
+  const avg = total / BigInt(items.length);
+  const span = max - min;
+  const spanBuckets = span < BigInt(bins) ? Number(span) + 1 : bins;
+  const bucketCount = Math.max(1, Math.min(bins, items.length, spanBuckets));
+  const bucketSize = bucketCount > 1 ? span / BigInt(bucketCount) : 1n;
+  const step = bucketSize > 0n ? bucketSize : 1n;
+
+  const buckets: PriceWallBucket[] = Array.from({ length: bucketCount }, (_, i) => {
+    const start = min + step * BigInt(i);
+    const end = i === bucketCount - 1 ? max : start + step;
+    return { start, end, count: 0, sum: 0n };
+  });
+
+  for (const item of items) {
+    let idx = Number((item.price - min) / step);
+    if (idx < 0) idx = 0;
+    if (idx >= bucketCount) idx = bucketCount - 1;
+    buckets[idx].count += 1;
+    buckets[idx].sum += item.price;
+  }
+
+  let maxSum = 0n;
+  for (const bucket of buckets) {
+    if (bucket.sum > maxSum) maxSum = bucket.sum;
+  }
+
+  return { buckets, min, max, total, avg, maxSum };
 }
 
 export default function CollectionDetailPage({ params }: { params: Promise<{ slug: string }> }) {
@@ -39,6 +87,8 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
   const [sweepMode, setSweepMode] = useState(false);
   const [selectedTxids, setSelectedTxids] = useState<Set<string>>(new Set());
   const [isSweepModalOpen, setIsSweepModalOpen] = useState(false);
+  const [isBidModalOpen, setIsBidModalOpen] = useState(false);
+  const [cancelBid, setCancelBid] = useState<CollectionBid | null>(null);
 
   const { connectionType, wallet } = useWalletStore();
 
@@ -159,8 +209,16 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
     .sort((a, b) => Number(a.price - b.price));
   const selectedListings = sweepableItems.filter((i) => selectedTxids.has(i.txid));
   const sweepTotal = selectedListings.reduce((s, l) => s + l.price, 0n);
+  const collectionBids = (collection?.bids || []) as CollectionBid[];
+  const activeBids = collectionBids.filter((b) => b.status === 'active' && !!b.bidSalt);
+  const orderedBids = activeBids
+    .slice()
+    .sort((a, b) => (BigInt(b.price) > BigInt(a.price) ? 1 : BigInt(b.price) < BigInt(a.price) ? -1 : 0));
+  const bestBid = orderedBids[0];
+  const priceWall = buildPriceWall(sweepableItems, 12);
   const selectNCheapest = (n: number) =>
     setSelectedTxids(new Set(sweepableItems.slice(0, n).map((l) => l.txid)));
+  const selectAll = () => setSelectedTxids(new Set(sweepableItems.map((l) => l.txid)));
   const toggleItem = (txid: string) =>
     setSelectedTxids((prev) => {
       const next = new Set(prev);
@@ -254,6 +312,158 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
           </p>
         )}
 
+        {/* Price Wall */}
+        <div className="card p-4 mb-6">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Price Wall</div>
+              <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Fixed listings depth by price band.
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <div className="flex flex-col">
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Listings</span>
+                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {sweepableItems.length}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Total Ask</span>
+                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {priceWall ? formatBCH(priceWall.total) : '--'}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Avg</span>
+                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {priceWall ? formatBCH(priceWall.avg) : '--'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {priceWall ? (
+            <>
+              <div className="mt-4 grid grid-cols-12 gap-2 items-end h-28">
+                {priceWall.buckets.map((bucket, idx) => {
+                  const heightPct = priceWall.maxSum > 0n && bucket.sum > 0n
+                    ? Math.max(6, Number((bucket.sum * 100n) / priceWall.maxSum))
+                    : 0;
+                  const label = `${formatBCH(bucket.start)} - ${formatBCH(bucket.end)} (${bucket.count})`;
+                  return (
+                    <div key={`${bucket.start.toString()}-${idx}`} className="h-full flex items-end">
+                      <div
+                        title={label}
+                        className="w-full rounded-md transition-all"
+                        style={{
+                          height: `${heightPct}%`,
+                          background: 'linear-gradient(180deg, var(--accent) 0%, rgba(0, 229, 69, 0.35) 100%)',
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[10px] font-mono"
+                style={{ color: 'var(--text-muted)' }}>
+                <span>{formatBCH(priceWall.min)}</span>
+                <span>{formatBCH(priceWall.max)}</span>
+              </div>
+            </>
+          ) : (
+            <div className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+              No fixed listings to plot yet.
+            </div>
+          )}
+        </div>
+
+        {/* Collection Bids */}
+        <div className="card p-4 mb-6">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Collection Bids</div>
+              <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Live buy offers for any NFT in this collection.
+              </div>
+            </div>
+            <div className="flex items-center gap-3 text-xs">
+              <div className="flex flex-col">
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Best Bid</span>
+                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {bestBid ? formatBCH(BigInt(bestBid.price)) : '--'}
+                </span>
+              </div>
+              {collection.tokenCategory && collection.creatorPkh && connectionType !== 'walletconnect' && (
+                <button
+                  onClick={() => setIsBidModalOpen(true)}
+                  className="text-xs px-3 py-1.5 rounded-lg font-medium text-white"
+                  style={{ background: 'var(--accent)' }}
+                >
+                  Place Bid
+                </button>
+              )}
+            </div>
+          </div>
+
+          {!collection.tokenCategory ? (
+            <div className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+              Bids are available for single-category collections only.
+            </div>
+          ) : orderedBids.length === 0 ? (
+            <div className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+              No active bids yet.
+            </div>
+          ) : (
+            <div className="mt-4 overflow-hidden rounded-lg border" style={{ borderColor: 'var(--border)' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Bid</th>
+                    <th className="text-right">Bidder</th>
+                    <th className="text-right hidden sm:table-cell">Age</th>
+                    <th className="text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orderedBids.slice(0, 5).map((bid) => (
+                    <tr key={bid.txid}>
+                      <td>
+                        <span className="text-sm font-mono" style={{ color: 'var(--accent)' }}>
+                          {formatBCH(BigInt(bid.price))}
+                        </span>
+                      </td>
+                      <td className="text-right">
+                        <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                          {shortenAddress(bid.bidder || '', 4)}
+                        </span>
+                      </td>
+                      <td className="text-right hidden sm:table-cell">
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                          {bid.createdAt ? timeAgo(bid.createdAt / 1000) : '--'}
+                        </span>
+                      </td>
+                      <td className="text-right">
+                        {wallet?.address && bid.bidder === wallet.address && connectionType !== 'walletconnect' ? (
+                          <button
+                            onClick={() => setCancelBid(bid)}
+                            className="text-xs px-2.5 py-1 rounded-lg border transition-colors hover:border-[var(--accent-red)] hover:text-[var(--accent-red)]"
+                            style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                          >
+                            Cancel
+                          </button>
+                        ) : (
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>--</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         {/* Tabs */}
         <div className="flex items-center gap-1 mb-4 border-b" style={{ borderColor: 'var(--border)' }}>
           {(['items', 'activity'] as const).map((tab) => (
@@ -302,6 +512,24 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
                         {n} Cheapest
                       </button>
                     ))}
+                    {sweepableItems.length > 0 && (
+                      <button
+                        onClick={selectAll}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                        style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                      >
+                        Select All
+                      </button>
+                    )}
+                    {selectedTxids.size > 0 && (
+                      <button
+                        onClick={() => setSelectedTxids(new Set())}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                        style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                      >
+                        Clear
+                      </button>
+                    )}
                     {selectedTxids.size > 0 && (
                       <button
                         onClick={() => setIsSweepModalOpen(true)}
@@ -550,6 +778,26 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
         buyerAddress={wallet?.address || ''}
         onComplete={() => { setSweepMode(false); setSelectedTxids(new Set()); }}
       />
+
+      <CollectionBidModal
+        isOpen={isBidModalOpen}
+        onClose={() => setIsBidModalOpen(false)}
+        tokenCategory={collection.tokenCategory || ''}
+        creatorPkh={collection.creatorPkh || ''}
+        creatorAddress={collection.creatorAddress || ''}
+        royaltyBasisPoints={collection.royaltyBasisPoints || 0}
+        onComplete={() => setIsBidModalOpen(false)}
+      />
+
+      {cancelBid && (
+        <CancelBidModal
+          isOpen={!!cancelBid}
+          onClose={() => setCancelBid(null)}
+          bid={cancelBid}
+          bidderAddress={wallet?.address || ''}
+          onComplete={() => setCancelBid(null)}
+        />
+      )}
     </div>
   );
 }

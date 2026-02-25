@@ -5,16 +5,17 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   Copy, Check, ExternalLink, Wallet, Image as ImageIcon,
-  Tag, Gavel, ArrowLeft, RefreshCw, Coins, Layers
+  Tag, Gavel, ArrowLeft, RefreshCw, Coins, Layers, Zap
 } from 'lucide-react';
 import { NFTGrid } from '@/components/nft/NFTGrid';
 import { ListNFTModal, type WalletNFT } from '@/components/nft/ListNFTModal';
 import { FractionalizeModal } from '@/components/nft/FractionalizeModal';
+import { AcceptBidModal } from '@/components/nft/AcceptBidModal';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { formatBCH, shortenAddress } from '@/lib/utils';
 import { fetchWalletData, fetchMarketplaceListings } from '@/lib/bch/api-client';
 import { getExplorerAddressUrl, CHIPNET_CONFIG } from '@/lib/bch/config';
-import type { NFTListing } from '@/lib/types';
+import type { NFTListing, CollectionBid } from '@/lib/types';
 
 type ProfileTab = 'owned' | 'listed' | 'auctions';
 
@@ -35,6 +36,8 @@ export default function ProfilePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [listingNft, setListingNft] = useState<WalletNFT | null>(null);
   const [fractionalizeNft, setFractionalizeNft] = useState<WalletNFT | null>(null);
+  const [collectionBids, setCollectionBids] = useState<CollectionBid[]>([]);
+  const [sellBid, setSellBid] = useState<{ bid: CollectionBid; nft: WalletNFT } | null>(null);
 
   const loadProfile = async () => {
     setIsLoading(true);
@@ -54,6 +57,21 @@ export default function ProfilePage() {
 
       const marketplace = await fetchMarketplaceListings();
       if (marketplace) {
+        setCollectionBids((marketplace.bids || []).filter((b) => !!b.bidSalt).map((b) => ({
+          txid: b.txid,
+          tokenCategory: b.tokenCategory,
+          bidSalt: b.bidSalt || '',
+          price: b.price,
+          bidder: b.bidder,
+          bidderPkh: b.bidderPkh || '',
+          creator: b.creator || '',
+          creatorPkh: b.creatorPkh || '',
+          royaltyBasisPoints: b.royaltyBasisPoints,
+          status: (b.status || 'active') as any,
+          contractAddress: b.contractAddress,
+          createdAt: b.createdAt,
+          updatedAt: b.updatedAt,
+        })));
         const listed = marketplace.listings
           .filter((l) => l.seller === address)
           .map((l) => ({
@@ -117,6 +135,15 @@ export default function ProfilePage() {
     : activeTab === 'listed'
       ? listedNfts
       : auctionNfts;
+
+  const bestBidsByCategory = new Map<string, CollectionBid>();
+  for (const bid of collectionBids) {
+    if (bid.status !== 'active') continue;
+    const existing = bestBidsByCategory.get(bid.tokenCategory);
+    if (!existing || BigInt(bid.price) > BigInt(existing.price)) {
+      bestBidsByCategory.set(bid.tokenCategory, bid);
+    }
+  }
 
   return (
     <div className="px-4 sm:px-6 py-6">
@@ -233,35 +260,21 @@ export default function ProfilePage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {nfts.map((nft) => (
-                <div key={nft.txid} className="card overflow-hidden flex flex-col">
-                  <div className="aspect-square flex items-center justify-center"
-                    style={{ background: 'var(--bg-secondary)' }}>
-                    <ImageIcon className="h-8 w-8" style={{ color: 'var(--text-muted)' }} />
-                  </div>
-                  <div className="p-3 flex flex-col gap-2 flex-1">
-                    <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
-                      {nft.tokenCategory.slice(0, 16)}…
+              {nfts.map((nft) => {
+                const bestBid = bestBidsByCategory.get(nft.tokenCategory);
+                return (
+                  <div key={nft.txid} className="card overflow-hidden flex flex-col">
+                    <div className="aspect-square flex items-center justify-center"
+                      style={{ background: 'var(--bg-secondary)' }}>
+                      <ImageIcon className="h-8 w-8" style={{ color: 'var(--text-muted)' }} />
                     </div>
-                    <div className="mt-auto flex flex-col gap-1.5">
-                      <button
-                        onClick={() => setListingNft({
-                          txid: nft.txid,
-                          vout: nft.vout,
-                          satoshis: nft.satoshis.toString(),
-                          tokenCategory: nft.tokenCategory,
-                          nftCommitment: nft.commitment,
-                          nftCapability: 'none',
-                        })}
-                        className="w-full py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        <Tag className="h-3 w-3" />
-                        List on Bazaar
-                      </button>
-                      {canSignTx && (
+                    <div className="p-3 flex flex-col gap-2 flex-1">
+                      <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
+                        {nft.tokenCategory.slice(0, 16)}…
+                      </div>
+                      <div className="mt-auto flex flex-col gap-1.5">
                         <button
-                          onClick={() => setFractionalizeNft({
+                          onClick={() => setListingNft({
                             txid: nft.txid,
                             vout: nft.vout,
                             satoshis: nft.satoshis.toString(),
@@ -269,17 +282,54 @@ export default function ProfilePage() {
                             nftCommitment: nft.commitment,
                             nftCapability: 'none',
                           })}
-                          className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
-                          style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+                          className="w-full py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                          style={{ background: 'var(--accent)' }}
                         >
-                          <Layers className="h-3 w-3" />
-                          Fractionalize
+                          <Tag className="h-3 w-3" />
+                          List on Bazaar
                         </button>
-                      )}
+                        {bestBid && canSignTx && (
+                          <button
+                            onClick={() => setSellBid({
+                              bid: bestBid,
+                              nft: {
+                                txid: nft.txid,
+                                vout: nft.vout,
+                                satoshis: nft.satoshis.toString(),
+                                tokenCategory: nft.tokenCategory,
+                                nftCommitment: nft.commitment,
+                                nftCapability: 'none',
+                              },
+                            })}
+                            className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                            style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
+                          >
+                            <Zap className="h-3 w-3" />
+                            Sell to Bid ({formatBCH(BigInt(bestBid.price))})
+                          </button>
+                        )}
+                        {canSignTx && (
+                          <button
+                            onClick={() => setFractionalizeNft({
+                              txid: nft.txid,
+                              vout: nft.vout,
+                              satoshis: nft.satoshis.toString(),
+                              tokenCategory: nft.tokenCategory,
+                              nftCommitment: nft.commitment,
+                              nftCapability: 'none',
+                            })}
+                            className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
+                            style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+                          >
+                            <Layers className="h-3 w-3" />
+                            Fractionalize
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )
         ) : (
@@ -308,6 +358,17 @@ export default function ProfilePage() {
           ownerAddress={address}
           ownerTokenAddress={wallet?.tokenAddress || address}
           onComplete={() => { setFractionalizeNft(null); loadProfile(); }}
+        />
+      )}
+
+      {sellBid && (
+        <AcceptBidModal
+          isOpen={!!sellBid}
+          onClose={() => setSellBid(null)}
+          bid={sellBid.bid}
+          nft={sellBid.nft}
+          sellerAddress={address}
+          onComplete={() => { setSellBid(null); loadProfile(); }}
         />
       )}
     </div>

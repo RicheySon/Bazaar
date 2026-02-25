@@ -56,6 +56,22 @@ export interface NexusAuction extends NexusListing {
   }>;
 }
 
+export interface NexusCollectionBid {
+  txid: string;
+  tokenCategory: string;
+  bidSalt?: string;
+  price: string;               // satoshis
+  bidder: string;
+  bidderPkh?: string;
+  creator?: string;
+  creatorPkh?: string;
+  royaltyBasisPoints: number;
+  status: 'active' | 'filled' | 'cancelled';
+  contractAddress?: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export interface NexusCollection {
   slug: string;
   name: string;
@@ -70,6 +86,7 @@ export interface NexusCollection {
   ownerCount: number;
   royaltyBasisPoints: number;
   items: Array<NexusListing | NexusAuction>;
+  bids?: NexusCollectionBid[];
   createdAt?: number;
 }
 
@@ -115,6 +132,13 @@ export class NexusClient {
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`getCollection failed: HTTP ${res.status}`);
     return res.json();
+  }
+
+  /** Fetch active collection bids (order book) for a collection slug. */
+  async getCollectionBids(slug: string): Promise<NexusCollectionBid[]> {
+    const col = await this.getCollection(slug);
+    if (!col) return [];
+    return (col.bids ?? []).filter((b) => b.status === 'active');
   }
 
   /** Fetch only active fixed-price listings in a collection, sorted cheapest first. */

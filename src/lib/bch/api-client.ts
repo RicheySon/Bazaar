@@ -55,6 +55,21 @@ export interface MarketplaceResponse {
     createdAt?: number;
     updatedAt?: number;
   }>;
+  bids: Array<{
+    txid: string;
+    tokenCategory: string;
+    bidSalt?: string;
+    price: string;
+    bidder: string;
+    bidderPkh?: string;
+    creator?: string;
+    creatorPkh?: string;
+    royaltyBasisPoints: number;
+    status?: string;
+    contractAddress?: string;
+    createdAt?: number;
+    updatedAt?: number;
+  }>;
   total: number;
 }
 

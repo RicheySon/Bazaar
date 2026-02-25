@@ -13,7 +13,8 @@ import { bytecodeToScript, Op } from '@cashscript/utils';
 import marketplaceArtifact from '@/lib/bch/artifacts/marketplace.json';
 import auctionArtifact from '@/lib/bch/artifacts/auction.json';
 import auctionStateArtifact from '@/lib/bch/artifacts/auction-state.json';
-import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload } from '@/lib/bch/listing-events';
+import collectionBidArtifact from '@/lib/bch/artifacts/collection-bid.json';
+import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload, parseCollectionBidEventPayload } from '@/lib/bch/listing-events';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
 import { getListingIndexAddress } from '@/lib/bch/config';
 import { commitmentHexToCid } from '@/lib/utils';
@@ -29,6 +30,7 @@ const MARKETPLACE_CACHE_MS = Math.max(0, parseInt(process.env.MARKETPLACE_INDEX_
 type MarketplaceData = {
   listings: any[];
   auctions: any[];
+  bids: any[];
   total: number;
 };
 
@@ -195,6 +197,7 @@ async function parseIndexEventsFromTx(
   listing?: { payload: ReturnType<typeof parseListingEventPayload>; commitment: string };
   bid?: ReturnType<typeof parseBidEventPayload>;
   status?: ReturnType<typeof parseStatusEventPayload>;
+  collectionBid?: ReturnType<typeof parseCollectionBidEventPayload>;
 } | null> {
   const rawTx = await provider.getRawTransaction(txid);
   const decoded = decodeTransaction(hexToBin(rawTx));
@@ -203,6 +206,7 @@ async function parseIndexEventsFromTx(
   let listingPayload: ReturnType<typeof parseListingEventPayload> | null = null;
   let bidPayload: ReturnType<typeof parseBidEventPayload> | null = null;
   let statusPayload: ReturnType<typeof parseStatusEventPayload> | null = null;
+  let collectionBidPayload: ReturnType<typeof parseCollectionBidEventPayload> | null = null;
   let commitment = '';
 
   for (const output of decoded.outputs) {
@@ -219,6 +223,9 @@ async function parseIndexEventsFromTx(
       if (!statusPayload) {
         statusPayload = parseStatusEventPayload(chunk);
       }
+      if (!collectionBidPayload) {
+        collectionBidPayload = parseCollectionBidEventPayload(chunk);
+      }
     }
   }
 
@@ -232,12 +239,13 @@ async function parseIndexEventsFromTx(
     }
   }
 
-  if (!listingPayload && !bidPayload && !statusPayload) return null;
+  if (!listingPayload && !bidPayload && !statusPayload && !collectionBidPayload) return null;
 
   return {
     listing: listingPayload ? { payload: listingPayload, commitment } : undefined,
     bid: bidPayload || undefined,
     status: statusPayload || undefined,
+    collectionBid: collectionBidPayload || undefined,
   };
 }
 
@@ -304,6 +312,27 @@ function buildAuctionContractInstance(
   );
 }
 
+function buildCollectionBidAddress(
+  provider: ElectrumNetworkProvider,
+  bidderPkh: string,
+  creatorPkh: string,
+  tokenCategory: string,
+  bidSalt: string,
+  price: bigint,
+  royaltyBasisPoints: number
+): string {
+  const bidderPkhBytes = hexToBin(bidderPkh);
+  const creatorPkhBytes = hexToBin(creatorPkh);
+  const categoryBytes = hexToBin(tokenCategory);
+  const bidSaltBytes = hexToBin(bidSalt);
+  const contract = new Contract(
+    collectionBidArtifact as Artifact,
+    [bidderPkhBytes, categoryBytes, bidSaltBytes, price, creatorPkhBytes, BigInt(royaltyBasisPoints)],
+    { provider }
+  );
+  return contract.address;
+}
+
 export async function getMarketplaceData() {
   const now = Date.now();
   if (MARKETPLACE_CACHE_MS > 0 && marketplaceCache) {
@@ -323,6 +352,7 @@ export async function getMarketplaceData() {
 
       const listings: any[] = [];
       const auctions: any[] = [];
+      const bids: any[] = [];
 
       const listingEvents = new Map<
         string,
@@ -336,12 +366,17 @@ export async function getMarketplaceData() {
         string,
         { status: 'sold' | 'cancelled' | 'claimed'; actorPkh: string; txid: string; height: number }
       >();
+      const collectionBidEvents = new Map<
+        string,
+        { payload: NonNullable<ReturnType<typeof parseCollectionBidEventPayload>>; height: number }
+      >();
 
       for (const entry of history) {
         let event = null as {
           listing?: { payload: ReturnType<typeof parseListingEventPayload>; commitment: string };
           bid?: ReturnType<typeof parseBidEventPayload>;
           status?: ReturnType<typeof parseStatusEventPayload>;
+          collectionBid?: ReturnType<typeof parseCollectionBidEventPayload>;
         } | null;
         try {
           event = await parseIndexEventsFromTx(provider, entry.txid);
@@ -375,6 +410,13 @@ export async function getMarketplaceData() {
             status: event.status.status,
             actorPkh: event.status.actorPkh,
             txid: entry.txid,
+            height: entry.height,
+          });
+        }
+
+        if (event.collectionBid) {
+          collectionBidEvents.set(entry.txid, {
+            payload: event.collectionBid,
             height: entry.height,
           });
         }
@@ -516,17 +558,69 @@ export async function getMarketplaceData() {
         else listings.push(result.item);
       }
 
+      const orderedBids = Array.from(collectionBidEvents.entries()).sort((a, b) => a[1].height - b[1].height);
+      const bidResults = await Promise.all(
+        orderedBids.map(async ([txid, entry]) => {
+          try {
+            const payload = entry.payload;
+            const createdAtMs = await getBlockTimeMs(provider, entry.height);
+            const contractAddress = buildCollectionBidAddress(
+              provider,
+              payload.bidderPkh,
+              payload.creatorPkh,
+              payload.tokenCategory,
+              payload.bidSalt,
+              payload.price,
+              payload.royaltyBasisPoints
+            );
+
+            let activeUtxo = null as any;
+            try {
+              const utxos = await provider.getUtxos(contractAddress);
+              activeUtxo = utxos.find((u) => !u.token);
+            } catch {
+              activeUtxo = null;
+            }
+
+            const status: 'active' | 'filled' = activeUtxo ? 'active' : 'filled';
+            return {
+              txid,
+              tokenCategory: payload.tokenCategory,
+              bidSalt: payload.bidSalt,
+              price: payload.price.toString(),
+              bidder: pkhToCashAddress(payload.bidderPkh),
+              bidderPkh: payload.bidderPkh,
+              creator: pkhToCashAddress(payload.creatorPkh),
+              creatorPkh: payload.creatorPkh,
+              royaltyBasisPoints: payload.royaltyBasisPoints,
+              status,
+              contractAddress,
+              createdAt: createdAtMs,
+              updatedAt: createdAtMs,
+            };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      for (const bid of bidResults) {
+        if (!bid) continue;
+        bids.push(bid);
+      }
+
       return {
         listings,
         auctions,
-        total: listings.length + auctions.length,
+        bids,
+        total: listings.length + auctions.length + bids.length,
       };
     } catch (error) {
       console.error('[Marketplace Indexer] Failed to build marketplace data:', error);
       if (marketplaceCache) {
         return marketplaceCache.data;
       }
-      return { listings: [], auctions: [], total: 0 };
+      return { listings: [], auctions: [], bids: [], total: 0 };
     }
   })();
 
@@ -569,6 +663,7 @@ export async function getListingById(id: string) {
 export async function getCollectionsData() {
   const data = await getMarketplaceData();
   const allItems: any[] = [...data.listings, ...data.auctions];
+  const allBids: any[] = data.bids || [];
 
   type CollEntry = {
     name: string;
@@ -588,6 +683,15 @@ export async function getCollectionsData() {
   };
 
   const collectionsMap = new Map<string, CollEntry>();
+  const bidsByCategory = new Map<string, any[]>();
+
+  for (const bid of allBids) {
+    const category = bid.tokenCategory;
+    if (!category) continue;
+    const existing = bidsByCategory.get(category) || [];
+    existing.push(bid);
+    bidsByCategory.set(category, existing);
+  }
 
   for (const item of allItems) {
     // Determine collection identity:
@@ -652,6 +756,7 @@ export async function getCollectionsData() {
       totalSupply: col.supply,
       ownerCount: col.owners.size,
       royaltyBasisPoints: col.royaltyBasisPoints,
+      bids: col.sharedCategory ? (bidsByCategory.get(col.sharedCategory) || []) : [],
       items: col.items,
       createdAt: col.createdAt,
     }));

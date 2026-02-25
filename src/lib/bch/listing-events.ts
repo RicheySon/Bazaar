@@ -19,6 +19,7 @@ export interface ListingEventPayload {
 const PREFIX = new Uint8Array([0x42, 0x5a, 0x41, 0x52]); // "BZAR"
 const BID_PREFIX = new Uint8Array([0x42, 0x5a, 0x42, 0x44]); // "BZBD"
 const STATUS_PREFIX = new Uint8Array([0x42, 0x5a, 0x53, 0x54]); // "BZST"
+const COLLECTION_BID_PREFIX = new Uint8Array([0x42, 0x5a, 0x43, 0x42]); // "BZCB"
 const VERSION = 2;
 const TYPE_FIXED = 0;
 const TYPE_AUCTION = 1;
@@ -26,6 +27,7 @@ const PAYLOAD_LENGTH_V1 = 104;
 const PAYLOAD_LENGTH_V2 = 136;
 const BID_PAYLOAD_LENGTH = 65;
 const STATUS_PAYLOAD_LENGTH = 58;
+const COLLECTION_BID_PAYLOAD_LENGTH = 119;
 
 const STATUS_CODES: Record<ListingStatusEvent, number> = {
   sold: 1,
@@ -175,6 +177,48 @@ export function parseBidEventPayload(payload: Uint8Array): {
   const bidderPkh = bytesToHex(payload.slice(37, 57));
   const bidAmount = readUint64BE(payload, 57);
   return { listingTxid, bidderPkh, bidAmount };
+}
+
+export function buildCollectionBidEventHex(params: {
+  tokenCategory: string;
+  bidderPkh: string;
+  creatorPkh: string;
+  bidSalt: string;
+  royaltyBasisPoints: number;
+  price: bigint;
+}): string {
+  const payload = new Uint8Array(COLLECTION_BID_PAYLOAD_LENGTH);
+  payload.set(COLLECTION_BID_PREFIX, 0);
+  payload[4] = VERSION;
+  payload.set(writeUint16BE(params.royaltyBasisPoints), 5);
+  payload.set(writeUint64BE(params.price), 7);
+  payload.set(hexToBytes(params.bidderPkh), 15);
+  payload.set(hexToBytes(params.creatorPkh), 35);
+  payload.set(hexToBytes(params.tokenCategory), 55);
+  payload.set(hexToBytes(params.bidSalt), 87);
+  return bytesToHex(payload);
+}
+
+export function parseCollectionBidEventPayload(payload: Uint8Array): {
+  tokenCategory: string;
+  bidderPkh: string;
+  creatorPkh: string;
+  bidSalt: string;
+  royaltyBasisPoints: number;
+  price: bigint;
+} | null {
+  if (payload.length < COLLECTION_BID_PAYLOAD_LENGTH) return null;
+  for (let i = 0; i < COLLECTION_BID_PREFIX.length; i++) {
+    if (payload[i] !== COLLECTION_BID_PREFIX[i]) return null;
+  }
+  if (payload[4] !== VERSION) return null;
+  const royaltyBasisPoints = readUint16BE(payload, 5);
+  const price = readUint64BE(payload, 7);
+  const bidderPkh = bytesToHex(payload.slice(15, 35));
+  const creatorPkh = bytesToHex(payload.slice(35, 55));
+  const tokenCategory = bytesToHex(payload.slice(55, 87));
+  const bidSalt = bytesToHex(payload.slice(87, 119));
+  return { tokenCategory, bidderPkh, creatorPkh, bidSalt, royaltyBasisPoints, price };
 }
 
 export function buildStatusEventHex(params: {

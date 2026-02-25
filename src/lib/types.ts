@@ -26,6 +26,7 @@ export interface Collection {
   totalSupply: number;
   ownerCount: number;
   royaltyBasisPoints: number;
+  bids?: CollectionBid[];
   items: any[];
   createdAt?: number;
 }
@@ -51,6 +52,22 @@ export interface NFTListing {
   status: 'active' | 'sold' | 'cancelled';
   listingType: 'fixed' | 'auction';
   contractAddress?: string;
+}
+
+export interface CollectionBid {
+  txid: string;
+  tokenCategory: string;
+  bidSalt: string;
+  price: string; // satoshis string
+  bidder: string;
+  bidderPkh: string;
+  creator: string;
+  creatorPkh: string;
+  royaltyBasisPoints: number;
+  status: 'active' | 'filled' | 'cancelled';
+  contractAddress?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface AuctionListing extends NFTListing {
