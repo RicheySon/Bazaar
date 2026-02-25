@@ -1,0 +1,50 @@
+// BAZAAR - Fixed Price NFT Marketplace Contract (Batch-Safe)
+// BCH Chipnet - CashScript v0.10+
+// Atomic swap: NFT for BCH with enforced creator royalties
+// Supports batch buys by allowing dynamic output indices.
+
+pragma cashscript >=0.10.0;
+
+contract MarketplaceV2(
+    bytes20 sellerPkh,
+    int price,
+    bytes20 creatorPkh,
+    int royaltyBasisPoints
+) {
+    // Anyone can buy the listed NFT by paying the correct price.
+    // Enforces: seller paid, creator royalty paid, NFT transfers to buyer.
+    // Output indices are passed in so multiple listings can be settled in one tx.
+    function buy(bytes20 buyerPkh, int sellerOut, int creatorOut, int buyerOut) {
+        // Calculate royalty and seller proceeds
+        int royaltyAmount = price * royaltyBasisPoints / 10000;
+        int sellerAmount = price - royaltyAmount;
+
+        // Output: Seller receives payment minus royalty
+        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[sellerOut].lockingBytecode == sellerLockingBytecode);
+        require(tx.outputs[sellerOut].value >= sellerAmount);
+
+        // Output: Creator receives royalty payment
+        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);
+        require(tx.outputs[creatorOut].lockingBytecode == creatorLockingBytecode);
+        require(tx.outputs[creatorOut].value >= royaltyAmount);
+
+        // Output: NFT goes to buyer (explicitly enforced)
+        bytes25 buyerLockingBytecode = new LockingBytecodeP2PKH(buyerPkh);
+        require(tx.outputs[buyerOut].lockingBytecode == buyerLockingBytecode);
+        require(tx.outputs[buyerOut].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[buyerOut].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[buyerOut].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
+    }
+
+    // Seller can cancel the listing and reclaim their NFT
+    function cancel(pubkey pk, sig s) {
+        require(hash160(pk) == sellerPkh);
+        require(checkSig(s, pk));
+        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
+    }
+}

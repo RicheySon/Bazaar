@@ -91,12 +91,14 @@ jest.unstable_mockModule('@/lib/utils', () => ({
 }));
 
 jest.unstable_mockModule('@/lib/bch/listing-events', () => ({
-  buildListingEventHex:     jest.fn().mockReturnValue('aabb'),
-  buildBidEventHex:         jest.fn().mockReturnValue('aabb'),
-  buildStatusEventHex:      jest.fn().mockReturnValue('aabb'),
-  parseListingEventPayload: jest.fn(),
-  parseBidEventPayload:     jest.fn(),
-  parseStatusEventPayload:  jest.fn(),
+  buildListingEventHex:           jest.fn().mockReturnValue('aabb'),
+  buildBidEventHex:               jest.fn().mockReturnValue('aabb'),
+  buildStatusEventHex:            jest.fn().mockReturnValue('aabb'),
+  buildCollectionBidEventHex:     jest.fn().mockReturnValue('aabb'),
+  buildCollectionBidStatusEventHex: jest.fn().mockReturnValue('aabb'),
+  parseListingEventPayload:       jest.fn(),
+  parseBidEventPayload:           jest.fn(),
+  parseStatusEventPayload:        jest.fn(),
 }));
 
 jest.unstable_mockModule('@/lib/bch/config', () => ({
