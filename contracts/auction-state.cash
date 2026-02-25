@@ -1,0 +1,66 @@
+// BAZAAR - Auction State Contract
+// Holds a mutable tracking NFT whose commitment stores the current bidder PKH (bytes20).
+// Enforces refunds to the previous bidder and links state updates to the auction output.
+
+pragma cashscript >=0.10.0;
+
+contract AuctionState(
+    bytes20 sellerPkh,
+    bytes35 auctionLockingBytecode,
+    bytes32 trackingCategory
+) {
+    function bid(
+        int currentBidAmount,
+        bytes20 previousBidderPkh,
+        bytes20 newBidderPkh
+    ) {
+        // Tie this state update to the auction output
+        require(tx.outputs[0].lockingBytecode == auctionLockingBytecode);
+
+        // This input must be the tracking NFT of the expected category
+        require(tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0] == trackingCategory);
+
+        // Output[1]: updated state UTXO with new bidder commitment
+        require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+        require(tx.outputs[1].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[1].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[1].nftCommitment == newBidderPkh);
+
+        // If no prior bidder, commitment must be zero and no refund is required
+        if (previousBidderPkh == 0x0000000000000000000000000000000000000000) {
+            require(tx.inputs[this.activeInputIndex].nftCommitment == previousBidderPkh);
+        } else {
+            // Previous bidder must match current commitment
+            require(tx.inputs[this.activeInputIndex].nftCommitment == previousBidderPkh);
+            bytes25 prevLock = new LockingBytecodeP2PKH(previousBidderPkh);
+            require(tx.outputs[2].lockingBytecode == prevLock);
+            require(tx.outputs[2].value >= currentBidAmount);
+        }
+    }
+
+    function claim(bytes20 winnerPkh) {
+        // Winner must match last bidder commitment
+        require(tx.inputs[this.activeInputIndex].nftCommitment == winnerPkh);
+
+        // Output[3]: tracking NFT to seller (cleanup)
+        bytes25 sellerLock = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[3].lockingBytecode == sellerLock);
+        require(tx.outputs[3].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[3].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[3].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
+    }
+
+    function reclaim(pubkey pk, sig s) {
+        require(hash160(pk) == sellerPkh);
+        require(checkSig(s, pk));
+        // Only allow reclaim when no bids have been placed
+        require(tx.inputs[this.activeInputIndex].nftCommitment == 0x0000000000000000000000000000000000000000);
+
+        // Output[1]: tracking NFT back to seller
+        bytes25 sellerLock = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[1].lockingBytecode == sellerLock);
+        require(tx.outputs[1].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[1].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[1].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
+    }
+}

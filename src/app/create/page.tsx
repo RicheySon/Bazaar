@@ -444,7 +444,7 @@ export default function CreatePage() {
           sellerPkh = Buffer.from(decoded.payload).toString('hex');
           creatorPkh = sellerPkh;
 
-          const listingParams = await buildWcListingParams({
+          let listingParams = await buildWcListingParams({
             address: wallet.address,
             tokenCategory,
             listingType: listingMode,
@@ -456,6 +456,59 @@ export default function CreatePage() {
             creatorPkh,
             minBidIncrement: BigInt(MARKETPLACE_CONFIG.minBidIncrement),
           });
+
+          if ('error' in listingParams && listingParams.needsPrep) {
+            const prepParams = await buildWcPrepTransaction(wallet.address);
+            if ('error' in prepParams) {
+              setError(prepParams.error);
+              setStep(0);
+              return;
+            }
+            const wcPrepRequest = wcPayloadMode === 'raw'
+              ? { transaction: prepParams.transaction, sourceOutputs: prepParams.sourceOutputs as any }
+              : { transaction: prepParams.transactionHex, sourceOutputs: prepParams.sourceOutputsJson as any };
+            setStepNote('Step 1 of 2 — Approve "Prepare wallet for auction listing" in your wallet app, then the listing will follow.');
+            const prepResult = await signTransaction({
+              ...wcPrepRequest,
+              broadcast: true,
+              userPrompt: prepParams.userPrompt,
+            });
+            setStepNote('');
+            if (!prepResult) {
+              setError('Wallet prep was cancelled. Open your wallet app, approve the "Prepare wallet for auction listing" request, then click Create & List NFT again.');
+              setStep(0);
+              return;
+            }
+            const prepTxid = prepResult.signedTransactionHash;
+            let prepConfirmed = false;
+            for (let i = 0; i < 12; i++) {
+              await new Promise(r => setTimeout(r, 2500));
+              const check = await fetch(`/api/utxos?address=${encodeURIComponent(wallet.address)}`);
+              const checkData = await check.json();
+              const checkUtxos: Array<{ txid: string; vout: number }> = checkData.utxos || [];
+              if (checkUtxos.some(u => u.txid === prepTxid && u.vout === 0)) {
+                prepConfirmed = true;
+                break;
+              }
+            }
+            if (!prepConfirmed) {
+              setError('Prep transaction not confirmed. Please try again.');
+              setStep(0);
+              return;
+            }
+            listingParams = await buildWcListingParams({
+              address: wallet.address,
+              tokenCategory,
+              listingType: listingMode,
+              price: listingMode === 'fixed' ? priceSats : undefined,
+              minBid: listingMode === 'auction' ? minBidSats : undefined,
+              endTime: listingMode === 'auction' ? BigInt(endTime) : undefined,
+              royaltyBasisPoints: BigInt(royaltyBp),
+              sellerPkh,
+              creatorPkh,
+              minBidIncrement: BigInt(MARKETPLACE_CONFIG.minBidIncrement),
+            });
+          }
 
           if ('error' in listingParams) {
             setError(listingParams.error);

@@ -13,11 +13,13 @@ contract Auction(
     int minBidIncrement
 ) {
     // Place a new bid - must be higher than current bid
-    // Previous bidder is automatically refunded in the same transaction
+    // Refund enforcement handled by AuctionState covenant
     function bid(
-        int currentBidAmount,
-        bytes20 previousBidderPkh
+        int currentBidAmount
     ) {
+        // Ensure caller provides the correct current bid amount (prevents refund theft)
+        require(currentBidAmount == tx.inputs[this.activeInputIndex].value);
+
         // Auction must not have ended
         // require(endTime > tx.locktime); // Disabled due to CashScript limitation with strict inequality
 
@@ -41,19 +43,19 @@ contract Auction(
             tx.outputs[0].tokenCategory
             == tx.inputs[this.activeInputIndex].tokenCategory
         );
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
 
-        // Output 1: Refund previous bidder (if there was one)
-        if (currentBidAmount > 0) {
-            bytes25 prevBidderLockingBytecode = new LockingBytecodeP2PKH(previousBidderPkh);
-            require(tx.outputs[1].lockingBytecode == prevBidderLockingBytecode);
-            require(tx.outputs[1].value >= currentBidAmount);
-        }
     }
 
     // Winner claims the NFT after auction ends
     function claim(
-        int finalBidAmount
+        int finalBidAmount,
+        bytes20 winnerPkh
     ) {
+        // Ensure caller provides the correct final bid amount (prevents underpayment)
+        require(finalBidAmount == tx.inputs[this.activeInputIndex].value);
+
         // Auction must have ended
         require(tx.time >= endTime);
 
@@ -74,11 +76,12 @@ contract Auction(
         require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);
         require(tx.outputs[1].value >= royaltyAmount);
 
-        // Output 2: NFT goes to winner
-        require(
-            tx.outputs[2].tokenCategory
-            == tx.inputs[this.activeInputIndex].tokenCategory
-        );
+        // Output 2: NFT goes to winner (explicitly enforced)
+        bytes25 winnerLockingBytecode = new LockingBytecodeP2PKH(winnerPkh);
+        require(tx.outputs[2].lockingBytecode == winnerLockingBytecode);
+        require(tx.outputs[2].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[2].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[2].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
     }
 
     // Seller reclaims NFT if no bids were placed after auction ends
@@ -86,5 +89,12 @@ contract Auction(
         require(hash160(pk) == sellerPkh);
         require(checkSig(s, pk));
         require(tx.time >= endTime);
+        // Only reclaim if no bids were placed (input value still below minBid)
+        require(tx.inputs[this.activeInputIndex].value < minBid);
+        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
     }
 }

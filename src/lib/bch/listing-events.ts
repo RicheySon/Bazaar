@@ -13,15 +13,17 @@ export interface ListingEventPayload {
   endTime: number;
   minBidIncrement: bigint;
   tokenCategory: string;
+  trackingCategory?: string;
 }
 
 const PREFIX = new Uint8Array([0x42, 0x5a, 0x41, 0x52]); // "BZAR"
 const BID_PREFIX = new Uint8Array([0x42, 0x5a, 0x42, 0x44]); // "BZBD"
 const STATUS_PREFIX = new Uint8Array([0x42, 0x5a, 0x53, 0x54]); // "BZST"
-const VERSION = 1;
+const VERSION = 2;
 const TYPE_FIXED = 0;
 const TYPE_AUCTION = 1;
-const PAYLOAD_LENGTH = 104;
+const PAYLOAD_LENGTH_V1 = 104;
+const PAYLOAD_LENGTH_V2 = 136;
 const BID_PAYLOAD_LENGTH = 65;
 const STATUS_PAYLOAD_LENGTH = 58;
 
@@ -85,7 +87,8 @@ function readUint64BE(bytes: Uint8Array, offset: number): bigint {
 }
 
 export function buildListingEventPayload(params: ListingEventPayload): Uint8Array {
-  const payload = new Uint8Array(PAYLOAD_LENGTH);
+  const trackingCategory = params.trackingCategory || params.tokenCategory;
+  const payload = new Uint8Array(PAYLOAD_LENGTH_V2);
   payload.set(PREFIX, 0);
   payload[4] = VERSION;
   payload[5] = params.listingType === 'fixed' ? TYPE_FIXED : TYPE_AUCTION;
@@ -99,6 +102,7 @@ export function buildListingEventPayload(params: ListingEventPayload): Uint8Arra
   payload.set(hexToBytes(params.sellerPkh), 32);
   payload.set(hexToBytes(params.creatorPkh), 52);
   payload.set(hexToBytes(params.tokenCategory), 72);
+  payload.set(hexToBytes(trackingCategory), 104);
   return payload;
 }
 
@@ -107,11 +111,12 @@ export function buildListingEventHex(params: ListingEventPayload): string {
 }
 
 export function parseListingEventPayload(payload: Uint8Array): ListingEventPayload | null {
-  if (payload.length < PAYLOAD_LENGTH) return null;
+  if (payload.length < PAYLOAD_LENGTH_V1) return null;
   for (let i = 0; i < PREFIX.length; i++) {
     if (payload[i] !== PREFIX[i]) return null;
   }
-  if (payload[4] !== VERSION) return null;
+  const version = payload[4];
+  if (version !== 1 && version !== 2) return null;
   const listingType = payload[5] === TYPE_FIXED ? 'fixed' : 'auction';
 
   const royaltyBasisPoints = readUint16BE(payload, 6);
@@ -123,6 +128,10 @@ export function parseListingEventPayload(payload: Uint8Array): ListingEventPaylo
   const sellerPkh = bytesToHex(payload.slice(32, 52));
   const creatorPkh = bytesToHex(payload.slice(52, 72));
   const tokenCategory = bytesToHex(payload.slice(72, 104));
+  const trackingCategory =
+    version >= 2 && payload.length >= PAYLOAD_LENGTH_V2
+      ? bytesToHex(payload.slice(104, 136))
+      : undefined;
 
   return {
     listingType,
@@ -134,6 +143,7 @@ export function parseListingEventPayload(payload: Uint8Array): ListingEventPaylo
     endTime,
     minBidIncrement: BigInt(minBidIncrement),
     tokenCategory,
+    trackingCategory,
   };
 }
 

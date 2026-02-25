@@ -21,7 +21,12 @@
   "abi": [
     {
       "name": "buy",
-      "inputs": []
+      "inputs": [
+        {
+          "name": "buyerPkh",
+          "type": "bytes20"
+        }
+      ]
     },
     {
       "name": "cancel",
@@ -37,11 +42,11 @@
       ]
     }
   ],
-  "bytecode": "OP_4 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_OVER OP_4 OP_ROLL OP_MUL 1027 OP_DIV OP_ROT OP_OVER OP_SUB 76a914 OP_3 OP_ROLL OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_ROT OP_CAT 88ac OP_CAT OP_1 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY OP_2 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUAL OP_NIP OP_ELSE OP_4 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_4 OP_PICK OP_HASH160 OP_EQUALVERIFY OP_4 OP_ROLL OP_4 OP_ROLL OP_CHECKSIG OP_NIP OP_NIP OP_NIP OP_ENDIF",
-  "source": "// BAZAAR - Fixed Price NFT Marketplace Contract\n// BCH Chipnet - CashScript v0.10+\n// Atomic swap: NFT for BCH with enforced creator royalties\n\npragma cashscript >=0.10.0;\n\ncontract Marketplace(\n    bytes20 sellerPkh,\n    int price,\n    bytes20 creatorPkh,\n    int royaltyBasisPoints\n) {\n    // Anyone can buy the listed NFT by paying the correct price\n    // Enforces: seller gets paid, creator gets royalty, NFT transfers to buyer\n    function buy() {\n        // Calculate royalty and seller proceeds\n        int royaltyAmount = price * royaltyBasisPoints / 10000;\n        int sellerAmount = price - royaltyAmount;\n\n        // Output 0: Seller receives payment minus royalty\n        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);\n        require(tx.outputs[0].value >= sellerAmount);\n\n        // Output 1: Creator receives royalty payment\n        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);\n        require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);\n        require(tx.outputs[1].value >= royaltyAmount);\n\n        // Output 2: NFT goes to buyer (token category must be preserved)\n        // The buyer's address is implicit (whoever constructed the transaction)\n        require(\n            tx.outputs[2].tokenCategory\n            == tx.inputs[this.activeInputIndex].tokenCategory\n        );\n    }\n\n    // Seller can cancel the listing and reclaim their NFT\n    function cancel(pubkey pk, sig s) {\n        require(hash160(pk) == sellerPkh);\n        require(checkSig(s, pk));\n    }\n}\n",
+  "bytecode": "OP_4 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_OVER OP_4 OP_ROLL OP_MUL 1027 OP_DIV OP_ROT OP_OVER OP_SUB 76a914 OP_3 OP_ROLL OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_ROT OP_CAT 88ac OP_CAT OP_1 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_ROT OP_CAT 88ac OP_CAT OP_2 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_2 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_2 OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_2 OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_ELSE OP_4 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_4 OP_PICK OP_HASH160 OP_OVER OP_EQUALVERIFY OP_2ROT OP_CHECKSIGVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_0 OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_NIP OP_NIP OP_ENDIF",
+  "source": "// BAZAAR - Fixed Price NFT Marketplace Contract\n// BCH Chipnet - CashScript v0.10+\n// Atomic swap: NFT for BCH with enforced creator royalties\n\npragma cashscript >=0.10.0;\n\ncontract Marketplace(\n    bytes20 sellerPkh,\n    int price,\n    bytes20 creatorPkh,\n    int royaltyBasisPoints\n) {\n    // Anyone can buy the listed NFT by paying the correct price\n    // Enforces: seller gets paid, creator gets royalty, NFT transfers to buyer\n    function buy(bytes20 buyerPkh) {\n        // Calculate royalty and seller proceeds\n        int royaltyAmount = price * royaltyBasisPoints / 10000;\n        int sellerAmount = price - royaltyAmount;\n\n        // Output 0: Seller receives payment minus royalty\n        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);\n        require(tx.outputs[0].value >= sellerAmount);\n\n        // Output 1: Creator receives royalty payment\n        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);\n        require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);\n        require(tx.outputs[1].value >= royaltyAmount);\n\n        // Output 2: NFT goes to buyer (explicitly enforced)\n        bytes25 buyerLockingBytecode = new LockingBytecodeP2PKH(buyerPkh);\n        require(tx.outputs[2].lockingBytecode == buyerLockingBytecode);\n        require(tx.outputs[2].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[2].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[2].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\n    }\n\n    // Seller can cancel the listing and reclaim their NFT\n    function cancel(pubkey pk, sig s) {\n        require(hash160(pk) == sellerPkh);\n        require(checkSig(s, pk));\n        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);\n        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\n    }\n}\n",
   "debug": {
-    "bytecode": "5479009c6378547a95021027967b78940376a914537a7e0288ac7e00cd8800cca1690376a9147b7e0288ac7e51cd8851cca16952d1c0ce877767547a519d5479a988547a547aac77777768",
-    "sourceMap": "15:4:36:5;;;;;17:28:17:33;:36::54;;:28:::1;:57::62:0;:28:::1;18:27:18:32:0;:35::48;:27:::1;21:40:21:75:0;:65::74;;:40::75:1;;;22:27:22:28:0;:16::45:1;:8::72;23:27:23:28:0;:16::35:1;:::51;:8::53;26:41:26:77:0;:66::76;:41::77:1;;;27:27:27:28:0;:16::45:1;:8::73;28:27:28:28:0;:16::35:1;:::52;:8::54;33:23:33:24:0;:12::39:1;34:25:34:46:0;:15::61:1;32:8:35:10;15:4:36:5;;39::42::0;;;;40:24:40:26;;:16::27:1;:8::42;41:25:41:26:0;;:28::30;;:8::33:1;39:4:42:5;;;7:0:43:1",
+    "bytecode": "5479009c6378547a95021027967b78940376a914537a7e0288ac7e00cd8800cca1690376a9147b7e0288ac7e51cd8851cca1690376a9147b7e0288ac7e52cd8852d1c0ce8852d3c0d09d52d2c0cf877767547a519d5479a9788871ad0376a9147c7e0288ac7e00cd8800d1c0ce8800d3c0d09d00d2c0cf8777777768",
+    "sourceMap": "15:4:36:5;;;;;17:28:17:33;:36::54;;:28:::1;:57::62:0;:28:::1;18:27:18:32:0;:35::48;:27:::1;21:40:21:75:0;:65::74;;:40::75:1;;;22:27:22:28:0;:16::45:1;:8::72;23:27:23:28:0;:16::35:1;:::51;:8::53;26:41:26:77:0;:66::76;:41::77:1;;;27:27:27:28:0;:16::45:1;:8::73;28:27:28:28:0;:16::35:1;:::52;:8::54;31:39:31:73:0;:64::72;:39::73:1;;;32:27:32:28:0;:16::45:1;:8::71;33:27:33:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;34:27:34:28:0;:16::41:1;:55::76:0;:45::89:1;:8::91;35:27:35:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;15:4:36:5;;39::47::0;;;;40:24:40:26;;:16::27:1;:31::40:0;:8::42:1;41:25:41:30:0;:8::33:1;42:40:42:75:0;:65::74;:40::75:1;;;43:27:43:28:0;:16::45:1;:8::72;44:27:44:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;45:27:45:28:0;:16::41:1;:55::76:0;:45::89:1;:8::91;46:27:46:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;39:4:47:5;;;7:0:48:1",
     "logs": [],
     "requires": [
       {
@@ -61,16 +66,44 @@
         "line": 28
       },
       {
-        "ip": 48,
+        "ip": 50,
         "line": 32
       },
       {
-        "ip": 57,
+        "ip": 55,
+        "line": 33
+      },
+      {
+        "ip": 60,
+        "line": 34
+      },
+      {
+        "ip": 66,
+        "line": 35
+      },
+      {
+        "ip": 76,
         "line": 40
       },
       {
-        "ip": 63,
+        "ip": 78,
         "line": 41
+      },
+      {
+        "ip": 86,
+        "line": 43
+      },
+      {
+        "ip": 91,
+        "line": 44
+      },
+      {
+        "ip": 96,
+        "line": 45
+      },
+      {
+        "ip": 102,
+        "line": 46
       }
     ]
   },
@@ -78,5 +111,5 @@
     "name": "cashc",
     "version": "0.12.1"
   },
-  "updatedAt": "2026-02-11T03:13:59.262Z"
+  "updatedAt": "2026-02-25T07:04:03.814Z"
 }

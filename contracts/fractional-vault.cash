@@ -31,6 +31,8 @@ contract FractionalVault(
         // Output[0] must carry the original NFT to the redeemer
         bytes vaultNftCat = tx.inputs[this.activeInputIndex].tokenCategory;
         require(tx.outputs[0].tokenCategory == vaultNftCat);
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
         require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(pkh));
     }
 
@@ -45,10 +47,17 @@ contract FractionalVault(
         bytes35 claimsLocking = new LockingBytecodeP2SH32(claimsScriptHash);
         require(tx.outputs[0].lockingBytecode == claimsLocking);
         require(tx.outputs[0].value >= reserveSats);
+        // Ensure the claims UTXO (input[1]) is preserved with its tracking NFT
+        require(tx.inputs[1].tokenCategory.split(32)[0] == sharesCategory);
+        require(tx.outputs[0].tokenCategory == tx.inputs[1].tokenCategory);
+        require(tx.outputs[0].tokenAmount == tx.inputs[1].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[1].nftCommitment);
 
         // Output[1]: original NFT delivered to buyer
         bytes vaultNftCat = tx.inputs[this.activeInputIndex].tokenCategory;
         require(tx.outputs[1].tokenCategory == vaultNftCat);
+        require(tx.outputs[1].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[1].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
         require(tx.outputs[1].lockingBytecode == new LockingBytecodeP2PKH(buyerPkh));
     }
 }

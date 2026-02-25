@@ -562,7 +562,7 @@ contract Marketplace(
 ) {
     // Anyone can buy the listed NFT by paying the correct price
     // Enforces: seller gets paid, creator gets royalty, NFT transfers to buyer
-    function buy() {
+    function buy(bytes20 buyerPkh) {
         // Calculate royalty and seller proceeds
         int royaltyAmount = price * royaltyBasisPoints / 10000;
         int sellerAmount = price - royaltyAmount;
@@ -577,17 +577,23 @@ contract Marketplace(
         require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);
         require(tx.outputs[1].value >= royaltyAmount);
 
-        // Output 2: NFT goes to buyer (token category must be preserved)
-        require(
-            tx.outputs[2].tokenCategory
-            == tx.inputs[this.activeInputIndex].tokenCategory
-        );
+        // Output 2: NFT goes to buyer (explicitly enforced)
+        bytes25 buyerLockingBytecode = new LockingBytecodeP2PKH(buyerPkh);
+        require(tx.outputs[2].lockingBytecode == buyerLockingBytecode);
+        require(tx.outputs[2].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[2].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[2].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
     }
 
     // Seller can cancel the listing and reclaim their NFT
     function cancel(pubkey pk, sig s) {
         require(hash160(pk) == sellerPkh);
         require(checkSig(s, pk));
+        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
     }
 }`} />
             </div>
@@ -616,6 +622,7 @@ contract Auction(
 ) {
     // Place a new bid — previous bidder is auto-refunded
     function bid(int currentBidAmount, bytes20 previousBidderPkh) {
+        require(currentBidAmount == tx.inputs[this.activeInputIndex].value);
         int newBidAmount = tx.outputs[0].value;
         if (currentBidAmount > 0) {
             require(newBidAmount >= currentBidAmount + minBidIncrement);
@@ -627,6 +634,8 @@ contract Auction(
             == tx.inputs[this.activeInputIndex].lockingBytecode);
         require(tx.outputs[0].tokenCategory
             == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
         // Refund previous bidder
         if (currentBidAmount > 0) {
             bytes25 prevLock = new LockingBytecodeP2PKH(previousBidderPkh);
@@ -636,7 +645,8 @@ contract Auction(
     }
 
     // Winner claims NFT after auction ends
-    function claim(int finalBidAmount) {
+    function claim(int finalBidAmount, bytes20 winnerPkh) {
+        require(finalBidAmount == tx.inputs[this.activeInputIndex].value);
         require(tx.time >= endTime);
         require(finalBidAmount >= minBid);
         int royaltyAmount = finalBidAmount * royaltyBasisPoints / 10000;
@@ -647,8 +657,12 @@ contract Auction(
         require(tx.outputs[0].value >= sellerAmount);
         require(tx.outputs[1].lockingBytecode == creatorLock);
         require(tx.outputs[1].value >= royaltyAmount);
+        bytes25 winnerLock = new LockingBytecodeP2PKH(winnerPkh);
+        require(tx.outputs[2].lockingBytecode == winnerLock);
         require(tx.outputs[2].tokenCategory
             == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[2].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[2].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
     }
 
     // Seller reclaims NFT if no bids after auction ends
@@ -656,6 +670,11 @@ contract Auction(
         require(hash160(pk) == sellerPkh);
         require(checkSig(s, pk));
         require(tx.time >= endTime);
+        bytes25 sellerLock = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerLock);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);
+        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
     }
 }`} />
             </div>

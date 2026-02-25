@@ -1,0 +1,160 @@
+{
+  "contractName": "AuctionState",
+  "constructorInputs": [
+    {
+      "name": "sellerPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "auctionLockingBytecode",
+      "type": "bytes35"
+    },
+    {
+      "name": "trackingCategory",
+      "type": "bytes32"
+    }
+  ],
+  "abi": [
+    {
+      "name": "bid",
+      "inputs": [
+        {
+          "name": "currentBidAmount",
+          "type": "int"
+        },
+        {
+          "name": "previousBidderPkh",
+          "type": "bytes20"
+        },
+        {
+          "name": "newBidderPkh",
+          "type": "bytes20"
+        }
+      ]
+    },
+    {
+      "name": "claim",
+      "inputs": [
+        {
+          "name": "winnerPkh",
+          "type": "bytes20"
+        }
+      ]
+    },
+    {
+      "name": "reclaim",
+      "inputs": [
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "s",
+          "type": "sig"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_3 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_0 OP_OUTPUTBYTECODE OP_ROT OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_ROT OP_EQUALVERIFY OP_1 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_1 OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_1 OP_OUTPUTTOKENCOMMITMENT OP_5 OP_ROLL OP_EQUALVERIFY OP_3 OP_PICK 0000000000000000000000000000000000000000 OP_EQUAL OP_IF OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_4 OP_PICK OP_EQUALVERIFY OP_ELSE OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_4 OP_PICK OP_EQUALVERIFY 76a914 OP_4 OP_PICK OP_CAT 88ac OP_CAT OP_2 OP_OUTPUTBYTECODE OP_OVER OP_EQUALVERIFY OP_2 OP_OUTPUTVALUE OP_4 OP_PICK OP_GREATERTHANOREQUAL OP_VERIFY OP_DROP OP_ENDIF OP_2DROP OP_2DROP OP_1 OP_ELSE OP_3 OP_PICK OP_1 OP_NUMEQUAL OP_IF OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_5 OP_ROLL OP_EQUALVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_3 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_3 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_3 OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_3 OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_NIP OP_NIP OP_ELSE OP_3 OP_ROLL OP_2 OP_NUMEQUALVERIFY OP_3 OP_PICK OP_HASH160 OP_OVER OP_EQUALVERIFY OP_4 OP_ROLL OP_4 OP_ROLL OP_CHECKSIGVERIFY OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT 0000000000000000000000000000000000000000 OP_EQUALVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_1 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_1 OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_1 OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_NIP OP_ENDIF OP_ENDIF",
+  "source": "// BAZAAR - Auction State Contract\n// Holds a mutable tracking NFT whose commitment stores the current bidder PKH (bytes20).\n// Enforces refunds to the previous bidder and links state updates to the auction output.\n\npragma cashscript >=0.10.0;\n\ncontract AuctionState(\n    bytes20 sellerPkh,\n    bytes35 auctionLockingBytecode,\n    bytes32 trackingCategory\n) {\n    function bid(\n        int currentBidAmount,\n        bytes20 previousBidderPkh,\n        bytes20 newBidderPkh\n    ) {\n        // Tie this state update to the auction output\n        require(tx.outputs[0].lockingBytecode == auctionLockingBytecode);\n\n        // This input must be the tracking NFT of the expected category\n        require(tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0] == trackingCategory);\n\n        // Output[1]: updated state UTXO with new bidder commitment\n        require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n        require(tx.outputs[1].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[1].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[1].nftCommitment == newBidderPkh);\n\n        // If no prior bidder, commitment must be zero and no refund is required\n        if (previousBidderPkh == 0x0000000000000000000000000000000000000000) {\n            require(tx.inputs[this.activeInputIndex].nftCommitment == previousBidderPkh);\n        } else {\n            // Previous bidder must match current commitment\n            require(tx.inputs[this.activeInputIndex].nftCommitment == previousBidderPkh);\n            bytes25 prevLock = new LockingBytecodeP2PKH(previousBidderPkh);\n            require(tx.outputs[2].lockingBytecode == prevLock);\n            require(tx.outputs[2].value >= currentBidAmount);\n        }\n    }\n\n    function claim(bytes20 winnerPkh) {\n        // Winner must match last bidder commitment\n        require(tx.inputs[this.activeInputIndex].nftCommitment == winnerPkh);\n\n        // Output[3]: tracking NFT to seller (cleanup)\n        bytes25 sellerLock = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[3].lockingBytecode == sellerLock);\n        require(tx.outputs[3].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[3].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[3].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\n    }\n\n    function reclaim(pubkey pk, sig s) {\n        require(hash160(pk) == sellerPkh);\n        require(checkSig(s, pk));\n        // Only allow reclaim when no bids have been placed\n        require(tx.inputs[this.activeInputIndex].nftCommitment == 0x0000000000000000000000000000000000000000);\n\n        // Output[1]: tracking NFT back to seller\n        bytes25 sellerLock = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[1].lockingBytecode == sellerLock);\n        require(tx.outputs[1].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[1].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[1].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\n    }\n}\n",
+  "debug": {
+    "bytecode": "5379009c6300cd7b88c0ce01207f757b8851cdc0c78851d1c0ce8851d3c0d09d51d2557a8853791400000000000000000000000000000000000000008763c0cf54798867c0cf5479880376a91454797e0288ac7e52cd788852cc5479a26975686d6d51675379519c63c0cf557a880376a9147c7e0288ac7e53cd8853d1c0ce8853d3c0d09d53d2c0cf8777777767537a529d5379a97888547a547aadc0cf140000000000000000000000000000000000000000880376a9147c7e0288ac7e51cd8851d1c0ce8851d3c0d09d51d2c0cf8777776868",
+    "sourceMap": "12:4:39:5;;;;;18:27:18:28;:16::45:1;:49::71:0;:8::73:1;21:26:21:47:0;:16::62:1;:69::71:0;:16::72:1;:::75;:79::95:0;:8::97:1;24:27:24:28:0;:16::45:1;:59::80:0;:49::97:1;:8::99;25:27:25:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;26:27:26:28:0;:16::41:1;:55::76:0;:45::89:1;:8::91;27:27:27:28:0;:16::43:1;:47::59:0;;:8::61:1;30:12:30:29:0;;:33::75;:12:::1;:77:32:9:0;31:30:31:51;:20::66:1;:70::87:0;;:12::89:1;32:15:38:9:0;34:30:34:51;:20::66:1;:70::87:0;;:12::89:1;35:31:35:74:0;:56::73;;:31::74:1;;;36::36:32:0;:20::49:1;:53::61:0;:12::63:1;37:31:37:32:0;:20::39:1;:43::59:0;;:20:::1;:12::61;32:15:38:9;;12:4:39:5;;;;41::51::0;;;;;43:26:43:47;:16::62:1;:66::75:0;;:8::77:1;46:29:46:64:0;:54::63;:29::64:1;;;47:27:47:28:0;:16::45:1;:8::61;48:27:48:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;49:27:49:28:0;:16::41:1;:55::76:0;:45::89:1;:8::91;50:27:50:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;41:4:51:5;;;;53::65::0;;;;54:24:54:26;;:16::27:1;:31::40:0;:8::42:1;55:25:55:26:0;;:28::30;;:8::33:1;57:26:57:47:0;:16::62:1;:66::108:0;:8::110:1;60:29:60:64:0;:54::63;:29::64:1;;;61:27:61:28:0;:16::45:1;:8::61;62:27:62:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;63:27:63:28:0;:16::41:1;:55::76:0;:45::89:1;:8::91;64:27:64:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;53:4:65:5;;7:0:66:1;",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 11,
+        "line": 18
+      },
+      {
+        "ip": 18,
+        "line": 21
+      },
+      {
+        "ip": 23,
+        "line": 24
+      },
+      {
+        "ip": 28,
+        "line": 25
+      },
+      {
+        "ip": 33,
+        "line": 26
+      },
+      {
+        "ip": 38,
+        "line": 27
+      },
+      {
+        "ip": 48,
+        "line": 31
+      },
+      {
+        "ip": 54,
+        "line": 34
+      },
+      {
+        "ip": 64,
+        "line": 36
+      },
+      {
+        "ip": 70,
+        "line": 37
+      },
+      {
+        "ip": 86,
+        "line": 43
+      },
+      {
+        "ip": 94,
+        "line": 47
+      },
+      {
+        "ip": 99,
+        "line": 48
+      },
+      {
+        "ip": 104,
+        "line": 49
+      },
+      {
+        "ip": 110,
+        "line": 50
+      },
+      {
+        "ip": 122,
+        "line": 54
+      },
+      {
+        "ip": 127,
+        "line": 55
+      },
+      {
+        "ip": 131,
+        "line": 57
+      },
+      {
+        "ip": 139,
+        "line": 61
+      },
+      {
+        "ip": 144,
+        "line": 62
+      },
+      {
+        "ip": 149,
+        "line": 63
+      },
+      {
+        "ip": 155,
+        "line": 64
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-02-25T08:57:26.862Z"
+}

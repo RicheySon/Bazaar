@@ -29,6 +29,14 @@ const mockProvider = {
 
 jest.unstable_mockModule('cashscript', () => ({
   ElectrumNetworkProvider: jest.fn().mockImplementation(() => mockProvider),
+  TransactionBuilder: jest.fn().mockImplementation(() => {
+    const builder: Record<string, any> = {};
+    for (const m of ['addInput', 'addInputs', 'addOutput', 'setLocktime']) {
+      builder[m] = jest.fn().mockReturnValue(builder);
+    }
+    builder.build = jest.fn().mockReturnValue(MOCK_RAW_HEX);
+    return builder;
+  }),
   Contract: jest.fn().mockImplementation(() => ({
     functions: {
       spend:  jest.fn().mockReturnValue(makeBuilder()),

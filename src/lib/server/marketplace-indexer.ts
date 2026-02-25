@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { bytecodeToScript, Op } from '@cashscript/utils';
 import marketplaceArtifact from '@/lib/bch/artifacts/marketplace.json';
 import auctionArtifact from '@/lib/bch/artifacts/auction.json';
+import auctionStateArtifact from '@/lib/bch/artifacts/auction-state.json';
 import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload } from '@/lib/bch/listing-events';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
 import { getListingIndexAddress } from '@/lib/bch/config';
@@ -266,9 +267,30 @@ function buildAuctionAddress(
   royaltyBasisPoints: number,
   minBidIncrement: bigint
 ): string {
+  const contract = buildAuctionContractInstance(
+    provider,
+    sellerPkh,
+    creatorPkh,
+    minBid,
+    endTime,
+    royaltyBasisPoints,
+    minBidIncrement
+  );
+  return contract.address;
+}
+
+function buildAuctionContractInstance(
+  provider: ElectrumNetworkProvider,
+  sellerPkh: string,
+  creatorPkh: string,
+  minBid: bigint,
+  endTime: number,
+  royaltyBasisPoints: number,
+  minBidIncrement: bigint
+): Contract {
   const sellerPkhBytes = hexToBin(sellerPkh);
   const creatorPkhBytes = hexToBin(creatorPkh);
-  const contract = new Contract(
+  return new Contract(
     auctionArtifact as Artifact,
     [
       sellerPkhBytes,
@@ -280,7 +302,6 @@ function buildAuctionAddress(
     ],
     { provider }
   );
-  return contract.address;
 }
 
 export async function getMarketplaceData() {
@@ -369,8 +390,8 @@ export async function getMarketplaceData() {
             const createdAtMs = await getBlockTimeMs(provider, entry.height);
 
             const isAuction = payload.listingType === 'auction';
-            const contractAddress = isAuction
-              ? buildAuctionAddress(
+            const auctionContract = isAuction
+              ? buildAuctionContractInstance(
                   provider,
                   payload.sellerPkh,
                   payload.creatorPkh,
@@ -379,6 +400,9 @@ export async function getMarketplaceData() {
                   payload.royaltyBasisPoints,
                   payload.minBidIncrement
                 )
+              : null;
+            const contractAddress = isAuction && auctionContract
+              ? auctionContract.address
               : buildMarketplaceAddress(
                   provider,
                   payload.sellerPkh,
@@ -386,6 +410,32 @@ export async function getMarketplaceData() {
                   payload.price,
                   payload.royaltyBasisPoints
                 );
+
+            const trackingCategory = isAuction ? payload.trackingCategory : undefined;
+            let stateCommitment = '';
+            let auctionStateAddress = '';
+            if (isAuction && trackingCategory && auctionContract) {
+              const decodedAuction = cashAddressToLockingBytecode(auctionContract.tokenAddress);
+              if (typeof decodedAuction !== 'string') {
+                const sellerPkhBytes = hexToBin(payload.sellerPkh);
+                const trackingBytes = hexToBin(trackingCategory);
+                const stateContract = new Contract(
+                  auctionStateArtifact as Artifact,
+                  [sellerPkhBytes, decodedAuction.bytecode, trackingBytes],
+                  { provider }
+                );
+                auctionStateAddress = stateContract.address;
+                try {
+                  const stateUtxos = await stateContract.getUtxos();
+                  const stateUtxo = stateUtxos.find((u) => u.token?.category === trackingCategory && u.token?.nft);
+                  if (stateUtxo?.token?.nft?.commitment) {
+                    stateCommitment = stateUtxo.token.nft.commitment;
+                  }
+                } catch {
+                  stateCommitment = '';
+                }
+              }
+            }
 
             let activeUtxo = null as any;
             try {
@@ -414,7 +464,12 @@ export async function getMarketplaceData() {
               const currentBid = currentBidRaw >= payload.minBid ? currentBidRaw.toString() : '0';
               const ended = payload.endTime ? payload.endTime <= nowSeconds() : false;
               const lastBidder = bidderEvents.length ? bidderEvents[bidderEvents.length - 1].bidderPkh : '';
-              const currentBidder = currentBid !== '0' && lastBidder ? pkhToCashAddress(lastBidder) : '';
+              let currentBidder = '';
+              if (stateCommitment && stateCommitment.length === 40 && !/^0+$/.test(stateCommitment)) {
+                currentBidder = pkhToCashAddress(stateCommitment);
+              } else if (currentBid !== '0' && lastBidder) {
+                currentBidder = pkhToCashAddress(lastBidder);
+              }
               const bidHistory = await Promise.all(
                 bidderEvents.map(async (bid) => ({
                   bidder: pkhToCashAddress(bid.bidderPkh),
@@ -433,6 +488,7 @@ export async function getMarketplaceData() {
                 seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
                 creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
                 commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
+                trackingCategory, auctionStateAddress,
                 currentBidder, bidHistory, status, metadata,
                 createdAt: createdAtMs, updatedAt: statusEvent ? statusAtMs : lastBidAtMs,
               }};

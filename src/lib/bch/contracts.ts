@@ -1,12 +1,13 @@
 // BCH Contract interaction layer
 // Handles marketplace and auction contract operations on Chipnet
 
-import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact } from 'cashscript';
+import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact, TransactionBuilder } from 'cashscript';
 import { decodeCashAddress, lockingBytecodeToCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode, decodeTransaction, hexToBin } from '@bitauth/libauth';
 import { encodeNullDataScript, Op } from '@cashscript/utils';
 import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
+import auctionStateArtifact from './artifacts/auction-state.json';
 import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
 import { hexToBytes, isHexString, utf8ToHex, cidToCommitmentHex, commitmentHexToCid } from '@/lib/utils';
@@ -16,6 +17,7 @@ import { getElectrumProvider, resetElectrumProvider } from '@/lib/bch/electrum';
 
 const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
+const ZERO_PKH_HEX = '00'.repeat(20);
 const wcLog = (...args: unknown[]) => {
   if (wcDebug) {
     console.log(...args);
@@ -246,6 +248,22 @@ export function buildAuctionContract(
   );
 }
 
+export function buildAuctionStateContract(
+  sellerPkh: string,
+  auctionLockingBytecode: Uint8Array,
+  trackingCategory: string
+): Contract {
+  const electrum = getProvider();
+  const sellerPkhBytes = Uint8Array.from(Buffer.from(sellerPkh, 'hex'));
+  const trackingCategoryBytes = Uint8Array.from(Buffer.from(trackingCategory, 'hex'));
+
+  return new Contract(
+    auctionStateArtifact as Artifact,
+    [sellerPkhBytes, auctionLockingBytecode, trackingCategoryBytes],
+    { provider: electrum }
+  );
+}
+
 export function buildP2PKHContract(pkh: string): Contract {
   const electrum = getProvider();
   const pkhBytes = Uint8Array.from(Buffer.from(pkh, 'hex'));
@@ -371,12 +389,50 @@ export async function createAuctionListing(
       }
     };
 
-    // Fetch fee UTXOs from the seller's actual P2PKH address (not userContract.address which is P2SH32).
-    const fundingUtxos = await getUtxos(sellerAddress);
+    // Fetch BCH UTXOs from the seller's actual P2PKH address (not P2SH32).
+    let fundingUtxos = await getUtxos(sellerAddress);
+    let nonTokenUtxos = fundingUtxos.filter(u => !u.token);
+
+    // Auction listings require a genesis-capable UTXO (vout=0) to mint the tracking NFT.
+    let genesisInput = nonTokenUtxos.find(u => u.vout === 0);
+    if (!genesisInput) {
+      const sorted = [...nonTokenUtxos].sort((a, b) => Number(b.satoshis - a.satoshis));
+      if (sorted.length === 0 || sorted[0].satoshis < 1200n) {
+        throw new Error('No genesis-capable UTXO. Please fund your wallet from the Chipnet faucet.');
+      }
+      const prepInput = sorted[0];
+      const prepFee = 400n;
+      const prepTx = userContract.functions.spend(sellerPk, signatureTemplate)
+        .fromP2PKH([prepInput], signatureTemplate)
+        .to(sellerAddress, prepInput.satoshis - prepFee)
+        .withTime(0)
+        .withHardcodedFee(prepFee)
+        .withoutChange();
+      const prepHex = await prepTx.build();
+      const prepTxid = await getProvider().sendRawTransaction(prepHex);
+
+      let freshUtxos: Utxo[] = [];
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        freshUtxos = await getUtxos(sellerAddress);
+        genesisInput = freshUtxos.find(u => u.txid === prepTxid && u.vout === 0 && !u.token) ?? undefined;
+        if (genesisInput) break;
+      }
+      if (!genesisInput) {
+        throw new Error('Prep transaction not confirmed in time. Please try again.');
+      }
+      fundingUtxos = freshUtxos;
+      nonTokenUtxos = freshUtxos.filter(u => !u.token);
+    }
+
     const feeUtxos = selectUtxos(
-      fundingUtxos.filter(u => !u.token && u.txid !== tokenUtxo.txid),
+      nonTokenUtxos.filter(u => u.txid !== tokenUtxo.txid && u.txid !== genesisInput.txid),
       3000n
     );
+
+    const trackingCategory = genesisInput.txid;
+    const auctionLockingBytecode = getLockingBytecode(auction.tokenAddress);
+    const auctionState = buildAuctionStateContract(sellerPkh, auctionLockingBytecode, trackingCategory);
 
     const indexAddress = getListingIndexAddress();
     if (!indexAddress) throw new Error('Listing index address not configured.');
@@ -391,19 +447,25 @@ export async function createAuctionListing(
       endTime: Number(endTime),
       minBidIncrement,
       tokenCategory,
+      trackingCategory,
     });
 
-    const totalIn = nftInput.satoshis + feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const totalIn = nftInput.satoshis + genesisInput.satoshis + feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
     const fee = 2000n;
-    const fixedOuts = 1000n + 546n;
+    const fixedOuts = 1000n + 1000n + 546n;
     const change = totalIn - fixedOuts - fee;
 
     const tx = userContract.functions.spend(sellerPk, signatureTemplate)
-      .fromP2PKH([nftInput, ...feeUtxos], signatureTemplate)
-      .to(auction.address, 1000n, {
+      .fromP2PKH([genesisInput, nftInput, ...feeUtxos], signatureTemplate)
+      .to(auction.tokenAddress, 1000n, {
         category: tokenCategory,
         amount: 0n,
         nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
+      } as any)
+      .to(auctionState.tokenAddress, 1000n, {
+        category: trackingCategory,
+        amount: 0n,
+        nft: { capability: 'mutable', commitment: ZERO_PKH_HEX },
       } as any)
       .withTime(0)
       .withHardcodedFee(fee)
@@ -466,7 +528,8 @@ export async function buyNFT(
     const fundingUtxos = selectUtxos(buyerUtxos, needed);
     const buyerTemplate = new SignatureTemplate(buyerPrivateKey);
 
-    const tx = contract.functions.buy()
+    const buyerPkh = getPkhHexFromAddress(buyerAddress);
+    const tx = contract.functions.buy(buyerPkh)
       .from(nftUtxo)
       .fromP2PKH(fundingUtxos, buyerTemplate); // Buyer pays
 
@@ -486,11 +549,11 @@ export async function buyNFT(
     // Output 2: NFT to Buyer
     tx.to(buyerAddress, 1000n, { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } as any);
 
-    const buyerPkh = getPkhHexFromAddress(buyerAddress);
+    const eventBuyerPkh = buyerPkh;
     const eventHex = buildStatusEventHex({
       listingTxid: listing.txid,
       status: 'sold',
-      actorPkh: buyerPkh,
+      actorPkh: eventBuyerPkh,
     });
 
     tx.to(indexAddress, 546n);
@@ -521,55 +584,106 @@ export async function cancelListing(
       throw new Error('Listing index address not configured.');
     }
 
-    let contract: Contract;
-
     if (listing.listingType === 'fixed') {
-      contract = buildMarketplaceContract(
+      const contract = buildMarketplaceContract(
         listing.sellerPkh,
         listing.price,
         listing.creatorPkh,
         BigInt(listing.royaltyBasisPoints)
       );
-    } else {
-      // Auction cancellation
-      const auction = listing as AuctionListing;
-      contract = buildAuctionContract(
-        listing.sellerPkh,
-        auction.minBid,
-        BigInt(auction.endTime),
-        listing.creatorPkh,
-        BigInt(listing.royaltyBasisPoints),
-        auction.minBidIncrement
+
+      const contractUtxos = await contract.getUtxos();
+      const nftUtxo = contractUtxos.find(u => u.token?.category === listing.tokenCategory);
+      if (!nftUtxo) throw new Error('NFT not found');
+
+      const signatureTemplate = new SignatureTemplate(sellerPrivateKey);
+      const sellerPk = signatureTemplate.getPublicKey();
+      const tx = contract.functions.cancel(sellerPk, signatureTemplate);
+
+      const sellerUtxos = await getUtxos(listing.sellerAddress);
+      const feeUtxos = selectUtxos(
+        sellerUtxos.filter(u => u.txid !== nftUtxo.txid),
+        3000n
       );
+
+      tx.from(nftUtxo)
+        .fromP2PKH(feeUtxos, signatureTemplate)
+        .to(listing.sellerAddress, 1000n, { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } as any);
+
+      const sellerPkh = getPkhHexFromAddress(listing.sellerAddress);
+      const eventHex = buildStatusEventHex({
+        listingTxid: listing.txid,
+        status: 'cancelled',
+        actorPkh: sellerPkh,
+      });
+
+      tx.to(indexAddress, 546n);
+      tx.withOpReturn([`0x${eventHex}`]);
+
+      return {
+        success: true,
+        txid: (await tx.send()).txid
+      };
     }
 
-    const contractUtxos = await contract.getUtxos();
-    const nftUtxo = contractUtxos.find(u => u.token?.category === listing.tokenCategory);
+    // Auction cancellation (reclaim NFT + tracking state)
+    const auction = listing as AuctionListing;
+    if (!auction.trackingCategory) {
+      throw new Error('Auction tracking category missing. Please re-list this NFT.');
+    }
 
-    if (!nftUtxo) throw new Error('NFT not found');
+    const auctionContract = buildAuctionContract(
+      listing.sellerPkh,
+      auction.minBid,
+      BigInt(auction.endTime),
+      listing.creatorPkh,
+      BigInt(listing.royaltyBasisPoints),
+      auction.minBidIncrement
+    );
+    const auctionUtxos = await auctionContract.getUtxos();
+    const auctionUtxo = auctionUtxos.find(u => u.token?.category === listing.tokenCategory);
+    if (!auctionUtxo) throw new Error('NFT not found in auction');
+
+    const auctionLockingBytecode = getLockingBytecode(auctionContract.tokenAddress);
+    const stateContract = buildAuctionStateContract(auction.sellerPkh, auctionLockingBytecode, auction.trackingCategory);
+    const stateUtxos = await stateContract.getUtxos();
+    const stateUtxo = stateUtxos.find(u => u.token?.category === auction.trackingCategory && u.token?.nft);
+    if (!stateUtxo) throw new Error('Auction state not found');
 
     const signatureTemplate = new SignatureTemplate(sellerPrivateKey);
     const sellerPk = signatureTemplate.getPublicKey();
 
-    // Call cancel or reclaim
-    let tx;
-    if (listing.listingType === 'fixed') {
-      tx = contract.functions.cancel(sellerPk, signatureTemplate);
-    } else {
-      tx = contract.functions.reclaim(sellerPk, signatureTemplate);
-      const auction = listing as AuctionListing;
-      tx.withTime(auction.endTime);
-    }
-
     const sellerUtxos = await getUtxos(listing.sellerAddress);
     const feeUtxos = selectUtxos(
-      sellerUtxos.filter(u => u.txid !== nftUtxo.txid),
+      sellerUtxos.filter(u => u.txid !== auctionUtxo.txid && u.txid !== stateUtxo.txid),
       3000n
     );
 
-    tx.from(nftUtxo)
-      .fromP2PKH(feeUtxos, signatureTemplate)
-      .to(listing.sellerAddress, 1000n, { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } as any);
+    const builder = new TransactionBuilder({ provider: getProvider() });
+    builder.addInput(auctionUtxo, auctionContract.unlock.reclaim(sellerPk, signatureTemplate));
+    builder.addInput(stateUtxo, stateContract.unlock.reclaim(sellerPk, signatureTemplate));
+    builder.addInputs(feeUtxos, signatureTemplate.unlockP2PKH());
+
+    // Output[0]: NFT back to seller
+    builder.addOutput({
+      to: listing.sellerAddress,
+      amount: 1000n,
+      token: {
+        category: listing.tokenCategory,
+        amount: 0n,
+        nft: { capability: auctionUtxo.token!.nft!.capability, commitment: auctionUtxo.token!.nft!.commitment },
+      },
+    });
+    // Output[1]: tracking NFT back to seller
+    builder.addOutput({
+      to: listing.sellerAddress,
+      amount: 1000n,
+      token: {
+        category: auction.trackingCategory,
+        amount: 0n,
+        nft: { capability: stateUtxo.token!.nft!.capability, commitment: stateUtxo.token!.nft!.commitment },
+      },
+    });
 
     const sellerPkh = getPkhHexFromAddress(listing.sellerAddress);
     const eventHex = buildStatusEventHex({
@@ -578,13 +692,21 @@ export async function cancelListing(
       actorPkh: sellerPkh,
     });
 
-    tx.to(indexAddress, 546n);
-    tx.withOpReturn([`0x${eventHex}`]);
+    builder.addOutput({ to: indexAddress, amount: 546n });
+    builder.addOutput({ to: encodeNullDataScript([Op.OP_RETURN, hexToBytes(eventHex)]), amount: 0n });
 
-    return {
-      success: true,
-      txid: (await tx.send()).txid
-    };
+    const totalInput = [auctionUtxo, stateUtxo, ...feeUtxos].reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 2000n;
+    const change = totalInput - 1000n - 1000n - 546n - fee;
+    if (change > 546n) {
+      builder.addOutput({ to: listing.sellerAddress, amount: change });
+    }
+    builder.setLocktime(auction.endTime);
+
+    const rawHex = builder.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+
+    return { success: true, txid };
   } catch (error) {
     return {
       success: false,
@@ -606,6 +728,10 @@ export async function placeBid(
       throw new Error('Listing index address not configured.');
     }
 
+    if (!auction.trackingCategory) {
+      throw new Error('Auction tracking category missing. Please re-list this NFT.');
+    }
+
     const contract = buildAuctionContract(
       auction.sellerPkh,
       auction.minBid,
@@ -616,30 +742,54 @@ export async function placeBid(
     );
 
     const contractUtxos = await contract.getUtxos();
-    const nftUtxo = contractUtxos.find(u => u.token?.category === auction.tokenCategory);
-    if (!nftUtxo) throw new Error('NFT not found in auction');
+    const auctionUtxo = contractUtxos.find(u => u.token?.category === auction.tokenCategory);
+    if (!auctionUtxo) throw new Error('NFT not found in auction');
 
-    const currentBid = auction.currentBid || 0n;
-    const prevBidder = auction.currentBidder || auction.sellerAddress;
-    const decodedPrev = decodeCashAddress(prevBidder);
-    if (typeof decodedPrev === 'string') {
-      throw new Error('Invalid previous bidder address');
-    }
-    const prevBidderPkh = decodedPrev.payload;
+    const auctionLockingBytecode = getLockingBytecode(contract.tokenAddress);
+    const stateContract = buildAuctionStateContract(auction.sellerPkh, auctionLockingBytecode, auction.trackingCategory);
+    const stateUtxos = await stateContract.getUtxos();
+    const stateUtxo = stateUtxos.find(u => u.token?.category === auction.trackingCategory && u.token?.nft);
+    if (!stateUtxo) throw new Error('Auction state not found');
+
+    const currentBidAmount = auctionUtxo.satoshis;
+    const prevCommitment = stateUtxo.token?.nft?.commitment || ZERO_PKH_HEX;
+    const prevBidderPkhHex = prevCommitment.length === 40 ? prevCommitment : ZERO_PKH_HEX;
+    const hasPrevBidder = !/^0+$/.test(prevBidderPkhHex);
 
     const bidderUtxos = await getUtxos(bidderAddress);
     // Needed: bidAmount + Fee (2000n for safety)
     const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 3000n);
     const bidderTemplate = new SignatureTemplate(bidderPrivateKey);
 
-    const tx = contract.functions.bid(currentBid, prevBidderPkh)
-      .from(nftUtxo)
-      .fromP2PKH(fundingUtxos, bidderTemplate)
-      .to(contract.address, bidAmount, { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } as any);
+    const builder = new TransactionBuilder({ provider: getProvider() });
+    builder.addInput(auctionUtxo, contract.unlock.bid(currentBidAmount));
+    builder.addInput(stateUtxo, stateContract.unlock.bid(currentBidAmount, prevBidderPkhHex, getPkhHexFromAddress(bidderAddress)));
+    builder.addInputs(fundingUtxos, bidderTemplate.unlockP2PKH());
 
-    // Output 1: Refund
-    if (currentBid > 0) {
-      tx.to(prevBidder, currentBid);
+    builder.addOutput({
+      to: contract.tokenAddress,
+      amount: bidAmount,
+      token: {
+        category: auction.tokenCategory,
+        amount: 0n,
+        nft: { capability: auctionUtxo.token!.nft!.capability, commitment: auctionUtxo.token!.nft!.commitment },
+      },
+    });
+    builder.addOutput({
+      to: stateContract.tokenAddress,
+      amount: 1000n,
+      token: {
+        category: auction.trackingCategory,
+        amount: 0n,
+        nft: { capability: stateUtxo.token!.nft!.capability, commitment: getPkhHexFromAddress(bidderAddress) },
+      },
+    });
+
+    if (hasPrevBidder) {
+      const prevBidderLockingBytecode = new Uint8Array([
+        0x76, 0xa9, 0x14, ...hexToBytes(prevBidderPkhHex), 0x88, 0xac,
+      ]);
+      builder.addOutput({ to: prevBidderLockingBytecode, amount: currentBidAmount });
     }
 
     const bidderPkh = getPkhHexFromAddress(bidderAddress);
@@ -648,18 +798,25 @@ export async function placeBid(
       bidderPkh,
       bidAmount,
     });
+    builder.addOutput({ to: indexAddress, amount: 546n });
+    builder.addOutput({ to: encodeNullDataScript([Op.OP_RETURN, hexToBytes(eventHex)]), amount: 0n });
 
-    tx.to(indexAddress, 546n);
-    tx.withOpReturn([`0x${eventHex}`]);
+    const totalInput = [auctionUtxo, stateUtxo, ...fundingUtxos].reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 2000n;
+    const refund = hasPrevBidder ? currentBidAmount : 0n;
+    const change = totalInput - bidAmount - 1000n - refund - 546n - fee;
+    if (change < 0n) {
+      throw new Error('Insufficient funds for bid fees.');
+    }
+    if (change > 546n) {
+      builder.addOutput({ to: bidderAddress, amount: change });
+    }
 
-    // Change automatically handled
+    builder.setLocktime(0);
+    const rawHex = builder.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
 
-    const txDetails = await tx.send();
-
-    return {
-      success: true,
-      txid: txDetails.txid,
-    };
+    return { success: true, txid };
   } catch (error) {
     return {
       success: false,
@@ -680,6 +837,10 @@ export async function claimAuction(
       throw new Error('Listing index address not configured.');
     }
 
+    if (!auction.trackingCategory) {
+      throw new Error('Auction tracking category missing. Please re-list this NFT.');
+    }
+
     const contract = buildAuctionContract(
       auction.sellerPkh,
       auction.minBid,
@@ -690,45 +851,75 @@ export async function claimAuction(
     );
 
     const contractUtxos = await contract.getUtxos();
-    const nftUtxo = contractUtxos.find(u => u.token?.category === auction.tokenCategory);
-    if (!nftUtxo) throw new Error('NFT not found');
+    const auctionUtxo = contractUtxos.find(u => u.token?.category === auction.tokenCategory);
+    if (!auctionUtxo) throw new Error('NFT not found');
 
-    const finalBid = auction.currentBid;
+    const auctionLockingBytecode = getLockingBytecode(contract.tokenAddress);
+    const stateContract = buildAuctionStateContract(auction.sellerPkh, auctionLockingBytecode, auction.trackingCategory);
+    const stateUtxos = await stateContract.getUtxos();
+    const stateUtxo = stateUtxos.find(u => u.token?.category === auction.trackingCategory && u.token?.nft);
+    if (!stateUtxo) throw new Error('Auction state not found');
+
+    const finalBid = auctionUtxo.satoshis;
 
     const winnerUtxos = await getUtxos(winnerAddress);
     const feeUtxos = selectUtxos(winnerUtxos, 3000n);
     const winnerTemplate = new SignatureTemplate(winnerPrivateKey);
 
-    const tx = contract.functions.claim(finalBid)
-      .from(nftUtxo)
-      .fromP2PKH(feeUtxos, winnerTemplate) // Pay for fees
-      .withTime(auction.endTime);
+    const winnerPkh = getPkhHexFromAddress(winnerAddress);
 
     const royalty = (finalBid * BigInt(auction.royaltyBasisPoints)) / 10000n;
     const sellerAmount = finalBid - royalty;
 
-    tx.to(auction.sellerAddress, sellerAmount);
-    tx.to(auction.creatorAddress, royalty);
+    const builder = new TransactionBuilder({ provider: getProvider() });
+    builder.addInput(auctionUtxo, contract.unlock.claim(finalBid, winnerPkh));
+    builder.addInput(stateUtxo, stateContract.unlock.claim(winnerPkh));
+    builder.addInputs(feeUtxos, winnerTemplate.unlockP2PKH());
 
-    // Send NFT to winner (currentBidder)
-    tx.to(auction.currentBidder, 1000n, { category: auction.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: auction.commitment } } as any);
-
-    const winnerPkh = getPkhHexFromAddress(winnerAddress);
+    builder.addOutput({ to: auction.sellerAddress, amount: sellerAmount });
+    builder.addOutput({ to: auction.creatorAddress, amount: royalty });
+    builder.addOutput({
+      to: winnerAddress,
+      amount: 1000n,
+      token: {
+        category: auction.tokenCategory,
+        amount: 0n,
+        nft: { capability: auctionUtxo.token!.nft!.capability, commitment: auctionUtxo.token!.nft!.commitment },
+      },
+    });
+    builder.addOutput({
+      to: auction.sellerAddress,
+      amount: 1000n,
+      token: {
+        category: auction.trackingCategory,
+        amount: 0n,
+        nft: { capability: stateUtxo.token!.nft!.capability, commitment: stateUtxo.token!.nft!.commitment },
+      },
+    });
     const eventHex = buildStatusEventHex({
       listingTxid: auction.txid,
       status: 'claimed',
       actorPkh: winnerPkh,
     });
 
-    tx.to(indexAddress, 546n);
-    tx.withOpReturn([`0x${eventHex}`]);
+    builder.addOutput({ to: indexAddress, amount: 546n });
+    builder.addOutput({ to: encodeNullDataScript([Op.OP_RETURN, hexToBytes(eventHex)]), amount: 0n });
 
-    const txDetails = await tx.send();
+    const totalInput = [auctionUtxo, stateUtxo, ...feeUtxos].reduce((sum, u) => sum + u.satoshis, 0n);
+    const fee = 2000n;
+    const change = totalInput - sellerAmount - royalty - 1000n - 1000n - 546n - fee;
+    if (change < 0n) {
+      throw new Error('Insufficient funds for claim fees.');
+    }
+    if (change > 546n) {
+      builder.addOutput({ to: winnerAddress, amount: change });
+    }
+    builder.setLocktime(auction.endTime);
 
-    return {
-      success: true,
-      txid: txDetails.txid,
-    };
+    const rawHex = builder.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+
+    return { success: true, txid };
   } catch (error) {
     return {
       success: false,
@@ -1194,7 +1385,7 @@ export async function buildWcListingParams(params: {
   contractAddress: string;
   commitment: string;
   userPrompt: string;
-} | { error: string }> {
+} | { error: string; needsPrep?: boolean }> {
   try {
     const utxos = await getUtxos(params.address);
     if (utxos.length === 0) {
@@ -1213,8 +1404,23 @@ export async function buildWcListingParams(params: {
       return { error: 'Listing index address not configured.' };
     }
 
+    const nonTokenUtxos = utxos.filter((u) => !u.token);
+    let genesisInput: Utxo | undefined;
+    let trackingCategory: string | undefined;
+
+    if (params.listingType === 'auction') {
+      genesisInput = nonTokenUtxos.find((u) => u.vout === 0);
+      if (!genesisInput) {
+        return {
+          error: 'Auction listing requires a genesis-capable UTXO (vout=0). Approve the prep transaction first, then try again.',
+          needsPrep: true,
+        };
+      }
+      trackingCategory = genesisInput.txid;
+    }
+
     const feeUtxos = selectUtxos(
-      utxos.filter((u) => !u.token && u.txid !== nftUtxo.txid),
+      nonTokenUtxos.filter((u) => !u.token && u.txid !== nftUtxo.txid && u.txid !== genesisInput?.txid),
       3000n
     );
 
@@ -1237,11 +1443,20 @@ export async function buildWcListingParams(params: {
             params.minBidIncrement || 1000n
           );
 
+    const auctionLockingBytecode =
+      params.listingType === 'auction' ? getLockingBytecode(contract.tokenAddress) : undefined;
+    const auctionState =
+      params.listingType === 'auction' && trackingCategory && auctionLockingBytecode
+        ? buildAuctionStateContract(params.sellerPkh, auctionLockingBytecode, trackingCategory)
+        : undefined;
+
     const commitment = nftUtxo.token.nft.commitment || '';
     const categoryBytes = new Uint8Array(Buffer.from(params.tokenCategory, 'hex'));
     const commitmentBytes = hexToBytes(commitment);
 
-    const inputs = [nftUtxo, ...feeUtxos];
+    const inputs = params.listingType === 'auction' && genesisInput
+      ? [genesisInput, nftUtxo, ...feeUtxos]
+      : [nftUtxo, ...feeUtxos];
 
     const sourceOutputs = inputs.map((utxo) => {
       const token = utxo.token
@@ -1272,7 +1487,8 @@ export async function buildWcListingParams(params: {
     const fee = 2000n;
     const nftDust = 1000n;
     const indexDust = 546n;
-    const change = totalInput - nftDust - indexDust - fee;
+    const stateDust = params.listingType === 'auction' ? 1000n : 0n;
+    const change = totalInput - nftDust - stateDust - indexDust - fee;
     if (change < 0n) {
       return { error: 'Insufficient funds for listing fees.' };
     }
@@ -1300,6 +1516,7 @@ export async function buildWcListingParams(params: {
       minBidIncrement:
         params.listingType === 'auction' ? params.minBidIncrement || 0n : 0n,
       tokenCategory: params.tokenCategory,
+      trackingCategory: trackingCategory || params.tokenCategory,
     });
     const opReturnLockingBytecode = encodeNullDataScript([
       Op.OP_RETURN,
@@ -1327,6 +1544,19 @@ export async function buildWcListingParams(params: {
           },
         },
       },
+      ...(auctionState && trackingCategory
+        ? [{
+            lockingBytecode: getLockingBytecode(auctionState.tokenAddress),
+            valueSatoshis: 1000n,
+            token: {
+              category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+              amount: 0n,
+              nft: {
+                capability: 'mutable' as const,
+                commitment: hexToBytes(ZERO_PKH_HEX),
+              },
+            },
+          }] : []),
       {
         lockingBytecode: indexLockingBytecode,
         valueSatoshis: indexDust,
@@ -1514,7 +1744,7 @@ export async function buildWcBuyParams(params: {
       locktime: 0,
     };
 
-    const contractUnlocker = contract.unlock.buy();
+    const contractUnlocker = contract.unlock.buy(buyerPkh);
     const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
       transaction,
       sourceOutputs,
@@ -1552,6 +1782,11 @@ export async function buildWcBidParams(params: {
   try {
     const { auction, bidAmount, bidderAddress } = params;
 
+    if (!auction.trackingCategory) {
+      return { error: 'Auction tracking category missing. Please re-list this NFT.' };
+    }
+    const trackingCategory = auction.trackingCategory;
+
     let sellerPkh = auction.sellerPkh || '';
     if (!sellerPkh) {
       const decodedSeller = decodeCashAddress(auction.sellerAddress);
@@ -1585,13 +1820,18 @@ export async function buildWcBidParams(params: {
       return { error: 'NFT not found in auction contract' };
     }
 
-    const currentBid = auction.currentBid || 0n;
-    const prevBidder = auction.currentBidder || auction.sellerAddress;
-    const decodedPrev = decodeCashAddress(prevBidder);
-    if (typeof decodedPrev === 'string') {
-      return { error: 'Invalid previous bidder address' };
+    const auctionLockingBytecode = getLockingBytecode(contract.tokenAddress);
+    const stateContract = buildAuctionStateContract(sellerPkh, auctionLockingBytecode, trackingCategory);
+    const stateUtxos = await stateContract.getUtxos();
+    const stateUtxo = stateUtxos.find((u) => u.token?.category === trackingCategory && u.token?.nft);
+    if (!stateUtxo || !stateUtxo.token?.nft) {
+      return { error: 'Auction state not found' };
     }
-    const prevBidderPkhHex = Buffer.from(decodedPrev.payload).toString('hex');
+
+    const currentBidAmount = contractUtxo.satoshis;
+    const prevCommitment = stateUtxo.token.nft.commitment || ZERO_PKH_HEX;
+    const prevBidderPkhHex = prevCommitment.length === 40 ? prevCommitment : ZERO_PKH_HEX;
+    const hasPrevBidder = !/^0+$/.test(prevBidderPkhHex);
 
     const indexAddress = getListingIndexAddress();
     if (!indexAddress) {
@@ -1602,7 +1842,8 @@ export async function buildWcBidParams(params: {
     const fundingUtxos = selectUtxos(bidderUtxos, bidAmount + 3000n);
 
     const bidderLockingBytecode = getLockingBytecode(bidderAddress);
-    const contractLockingBytecode = getLockingBytecode(contract.address);
+    const contractLockingBytecode = auctionLockingBytecode;
+    const stateLockingBytecode = getLockingBytecode(stateContract.tokenAddress);
 
     const tokenCategoryBytes = new Uint8Array(Buffer.from(contractUtxo.token.category, 'hex'));
     const commitmentBytes = hexToBytes(contractUtxo.token.nft.commitment || '');
@@ -1615,24 +1856,46 @@ export async function buildWcBidParams(params: {
       },
     };
 
-    const inputs = [contractUtxo, ...fundingUtxos];
+    const inputs = [contractUtxo, stateUtxo, ...fundingUtxos];
     const sourceOutputs = inputs.map((utxo, idx) => {
-      const isContractInput = idx === 0;
+      const isAuctionInput = idx === 0;
+      const isStateInput = idx === 1;
       return {
         outpointIndex: utxo.vout,
         outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
         sequenceNumber: 0xffffffff,
         unlockingBytecode: new Uint8Array(),
-        lockingBytecode: isContractInput ? contractLockingBytecode : bidderLockingBytecode,
+        lockingBytecode: isAuctionInput
+          ? contractLockingBytecode
+          : isStateInput
+            ? stateLockingBytecode
+            : bidderLockingBytecode,
         valueSatoshis: utxo.satoshis,
-        token: isContractInput ? token : undefined,
-        contract: isContractInput
+        token: isAuctionInput
+          ? token
+          : isStateInput
+            ? {
+                category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+                amount: 0n,
+                nft: {
+                  capability: stateUtxo.token!.nft!.capability,
+                  commitment: hexToBytes(prevBidderPkhHex),
+                },
+              }
+            : undefined,
+        contract: isAuctionInput
           ? {
               abiFunction: contract.artifact.abi.find((fn) => fn.name === 'bid'),
               redeemScript: hexToBytes(contract.bytecode),
               artifact: contract.artifact,
             }
-          : undefined,
+          : isStateInput
+            ? {
+                abiFunction: stateContract.artifact.abi.find((fn) => fn.name === 'bid'),
+                redeemScript: hexToBytes(stateContract.bytecode),
+                artifact: stateContract.artifact,
+              }
+            : undefined,
       };
     });
 
@@ -1650,11 +1913,26 @@ export async function buildWcBidParams(params: {
 
     const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
       { lockingBytecode: contractLockingBytecode, valueSatoshis: bidAmount, token },
+      {
+        lockingBytecode: getLockingBytecode(stateContract.tokenAddress),
+        valueSatoshis: 1000n,
+        token: {
+          category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+          amount: 0n,
+          nft: {
+            capability: stateUtxo.token!.nft!.capability,
+            commitment: hexToBytes(bidderPkh),
+          },
+        },
+      },
     ];
 
-    if (currentBid > 0n) {
-      const prevBidderLockingBytecode = getLockingBytecode(prevBidder);
-      outputs.push({ lockingBytecode: prevBidderLockingBytecode, valueSatoshis: currentBid });
+    const refund = hasPrevBidder ? currentBidAmount : 0n;
+    if (hasPrevBidder) {
+      const prevBidderLockingBytecode = new Uint8Array([
+        0x76, 0xa9, 0x14, ...hexToBytes(prevBidderPkhHex), 0x88, 0xac,
+      ]);
+      outputs.push({ lockingBytecode: prevBidderLockingBytecode, valueSatoshis: currentBidAmount });
     }
 
     outputs.push({ lockingBytecode: indexLockingBytecode, valueSatoshis: 546n });
@@ -1662,12 +1940,7 @@ export async function buildWcBidParams(params: {
 
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
     const fee = 2000n;
-    const change =
-      totalInput -
-      bidAmount -
-      (currentBid > 0n ? currentBid : 0n) -
-      546n -
-      fee;
+    const change = totalInput - bidAmount - 1000n - refund - 546n - fee;
     if (change < 0n) {
       return { error: 'Insufficient funds for bid fees.' };
     }
@@ -1687,13 +1960,25 @@ export async function buildWcBidParams(params: {
       locktime: 0,
     };
 
-    const contractUnlocker = contract.unlock.bid(currentBid, prevBidderPkhHex);
+    const contractUnlocker = contract.unlock.bid(currentBidAmount);
     const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
       transaction,
       sourceOutputs,
       inputIndex: 0,
     });
     transaction.inputs[0].unlockingBytecode = new Uint8Array(contractUnlocking);
+
+    const stateUnlocker = stateContract.unlock.bid(
+      currentBidAmount,
+      prevBidderPkhHex,
+      bidderPkh
+    );
+    const stateUnlocking = stateUnlocker.generateUnlockingBytecode({
+      transaction,
+      sourceOutputs,
+      inputIndex: 1,
+    });
+    transaction.inputs[1].unlockingBytecode = new Uint8Array(stateUnlocking);
 
     const transactionHex = binToHex(encodeTransaction(transaction));
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);
@@ -1724,6 +2009,11 @@ export async function buildWcClaimParams(params: {
   try {
     const { auction, winnerAddress } = params;
 
+    if (!auction.trackingCategory) {
+      return { error: 'Auction tracking category missing. Please re-list this NFT.' };
+    }
+    const trackingCategory = auction.trackingCategory;
+
     let sellerPkh = auction.sellerPkh || '';
     if (!sellerPkh) {
       const decodedSeller = decodeCashAddress(auction.sellerAddress);
@@ -1757,7 +2047,15 @@ export async function buildWcClaimParams(params: {
       return { error: 'NFT not found in auction contract' };
     }
 
-    const finalBid = auction.currentBid || 0n;
+    const auctionLockingBytecode = getLockingBytecode(contract.tokenAddress);
+    const stateContract = buildAuctionStateContract(sellerPkh, auctionLockingBytecode, trackingCategory);
+    const stateUtxos = await stateContract.getUtxos();
+    const stateUtxo = stateUtxos.find((u) => u.token?.category === trackingCategory && u.token?.nft);
+    if (!stateUtxo || !stateUtxo.token?.nft) {
+      return { error: 'Auction state not found' };
+    }
+
+    const finalBid = contractUtxo.satoshis;
     if (finalBid <= 0n) {
       return { error: 'No winning bid to claim' };
     }
@@ -1773,7 +2071,8 @@ export async function buildWcClaimParams(params: {
     const winnerLockingBytecode = getLockingBytecode(winnerAddress);
     const sellerLockingBytecode = getLockingBytecode(auction.sellerAddress);
     const creatorLockingBytecode = getLockingBytecode(auction.creatorAddress);
-    const contractLockingBytecode = getLockingBytecode(contract.address);
+    const contractLockingBytecode = getLockingBytecode(contract.tokenAddress);
+    const stateLockingBytecode = getLockingBytecode(stateContract.tokenAddress);
 
     const tokenCategoryBytes = new Uint8Array(Buffer.from(contractUtxo.token.category, 'hex'));
     const commitmentBytes = hexToBytes(contractUtxo.token.nft.commitment || '');
@@ -1786,24 +2085,52 @@ export async function buildWcClaimParams(params: {
       },
     };
 
-    const inputs = [contractUtxo, ...feeUtxos];
+    const stateCommitment = stateUtxo.token.nft.commitment || ZERO_PKH_HEX;
+    const winnerPkh = getPkhHexFromAddress(winnerAddress);
+    if (stateCommitment !== winnerPkh) {
+      return { error: 'Winner does not match current highest bidder.' };
+    }
+
+    const inputs = [contractUtxo, stateUtxo, ...feeUtxos];
     const sourceOutputs = inputs.map((utxo, idx) => {
-      const isContractInput = idx === 0;
+      const isAuctionInput = idx === 0;
+      const isStateInput = idx === 1;
       return {
         outpointIndex: utxo.vout,
         outpointTransactionHash: new Uint8Array(Buffer.from(utxo.txid, 'hex')),
-        sequenceNumber: 0xfffffffe,
+        sequenceNumber: isAuctionInput || isStateInput ? 0xfffffffe : 0xffffffff,
         unlockingBytecode: new Uint8Array(),
-        lockingBytecode: isContractInput ? contractLockingBytecode : winnerLockingBytecode,
+        lockingBytecode: isAuctionInput
+          ? contractLockingBytecode
+          : isStateInput
+            ? stateLockingBytecode
+            : winnerLockingBytecode,
         valueSatoshis: utxo.satoshis,
-        token: isContractInput ? token : undefined,
-        contract: isContractInput
+        token: isAuctionInput
+          ? token
+          : isStateInput
+            ? {
+                category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+                amount: 0n,
+                nft: {
+                  capability: stateUtxo.token!.nft!.capability,
+                  commitment: hexToBytes(stateCommitment),
+                },
+              }
+            : undefined,
+        contract: isAuctionInput
           ? {
               abiFunction: contract.artifact.abi.find((fn) => fn.name === 'claim'),
               redeemScript: hexToBytes(contract.bytecode),
               artifact: contract.artifact,
             }
-          : undefined,
+          : isStateInput
+            ? {
+                abiFunction: stateContract.artifact.abi.find((fn) => fn.name === 'claim'),
+                redeemScript: hexToBytes(stateContract.bytecode),
+                artifact: stateContract.artifact,
+              }
+            : undefined,
       };
     });
 
@@ -1811,7 +2138,6 @@ export async function buildWcClaimParams(params: {
     const sellerAmount = finalBid - royalty;
 
     const indexLockingBytecode = getLockingBytecode(indexAddress);
-    const winnerPkh = getPkhHexFromAddress(winnerAddress);
     const eventHex = buildStatusEventHex({
       listingTxid: auction.txid,
       status: 'claimed',
@@ -1826,13 +2152,25 @@ export async function buildWcClaimParams(params: {
       { lockingBytecode: sellerLockingBytecode, valueSatoshis: sellerAmount },
       { lockingBytecode: creatorLockingBytecode, valueSatoshis: royalty },
       { lockingBytecode: winnerLockingBytecode, valueSatoshis: 1000n, token },
+      {
+        lockingBytecode: sellerLockingBytecode,
+        valueSatoshis: 1000n,
+        token: {
+          category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+          amount: 0n,
+          nft: {
+            capability: stateUtxo.token!.nft!.capability,
+            commitment: hexToBytes(stateCommitment),
+          },
+        },
+      },
       { lockingBytecode: indexLockingBytecode, valueSatoshis: 546n },
       { lockingBytecode: opReturnLockingBytecode, valueSatoshis: 0n },
     ];
 
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
     const fee = 2000n;
-    const change = totalInput - sellerAmount - royalty - 1000n - 546n - fee;
+    const change = totalInput - sellerAmount - royalty - 1000n - 1000n - 546n - fee;
     if (change < 0n) {
       return { error: 'Insufficient funds for claim fees.' };
     }
@@ -1852,13 +2190,21 @@ export async function buildWcClaimParams(params: {
       locktime: auction.endTime,
     };
 
-    const contractUnlocker = contract.unlock.claim(finalBid);
+    const contractUnlocker = contract.unlock.claim(finalBid, winnerPkh);
     const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
       transaction,
       sourceOutputs,
       inputIndex: 0,
     });
     transaction.inputs[0].unlockingBytecode = new Uint8Array(contractUnlocking);
+
+    const stateUnlocker = stateContract.unlock.claim(winnerPkh);
+    const stateUnlocking = stateUnlocker.generateUnlockingBytecode({
+      transaction,
+      sourceOutputs,
+      inputIndex: 1,
+    });
+    transaction.inputs[1].unlockingBytecode = new Uint8Array(stateUnlocking);
 
     const transactionHex = binToHex(encodeTransaction(transaction));
     const sourceOutputsJson = buildSourceOutputsJson(sourceOutputs);

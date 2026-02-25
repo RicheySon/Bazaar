@@ -61,6 +61,8 @@ export interface AuctionListing extends NFTListing {
   endTime: number; // Unix timestamp
   minBidIncrement: bigint;
   bidHistory: AuctionBid[];
+  trackingCategory?: string;
+  auctionStateAddress?: string;
 }
 
 export interface AuctionBid {
