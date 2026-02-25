@@ -1,29 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getVaultStatus } from '@/lib/bch/fractional-contracts';
+import { getVaultByCategory } from '@/lib/server/vaults-store';
 
-// GET /api/fractionalize/[category]?reserveSats=...&nftCategory=...
-// Returns live status of a fractional vault.
+// GET /api/fractionalize/[category]
+// Returns live vault status + stored vault metadata (no query params required).
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ category: string }> },
 ) {
   try {
     const { category: sharesCategory } = await params;
-    const { searchParams } = new URL(request.url);
-    const reserveSatsStr = searchParams.get('reserveSats');
-    const nftCategory = searchParams.get('nftCategory');
 
-    if (!sharesCategory || !reserveSatsStr || !nftCategory) {
-      return NextResponse.json(
-        { error: 'Missing required query params: reserveSats, nftCategory' },
-        { status: 400 },
-      );
+    // Look up vault record from store
+    const vault = getVaultByCategory(sharesCategory);
+    if (!vault) {
+      return NextResponse.json({ error: 'Vault not found' }, { status: 404 });
     }
 
-    const status = await getVaultStatus(sharesCategory, BigInt(reserveSatsStr), nftCategory);
+    const status = await getVaultStatus(
+      sharesCategory,
+      BigInt(vault.reserveSats),
+      vault.nftCategory,
+    );
 
-    // Serialize bigints to strings for JSON
+    // Serialize bigints to strings for JSON and merge with stored metadata
     return NextResponse.json({
+      // Live on-chain status
       active: status.active,
       boughtOut: status.boughtOut,
       claimsHasBch: status.claimsHasBch,
@@ -31,6 +33,12 @@ export async function GET(
       remainingSats: status.remainingSats.toString(),
       totalShares: status.totalShares.toString(),
       reserveSats: status.reserveSats.toString(),
+      // Stored vault metadata
+      nftCategory: vault.nftCategory,
+      nftCommitment: vault.nftCommitment,
+      nftCapability: vault.nftCapability,
+      ownerAddress: vault.ownerAddress,
+      createdAt: vault.createdAt,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Internal server error';

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fractionalizeNFT } from '@/lib/bch/fractional-contracts';
+import { saveVault } from '@/lib/server/vaults-store';
 
 // POST /api/fractionalize
 // Fractionalize an NFT into 1,000,000 FT shares locked in a vault covenant.
@@ -32,6 +33,24 @@ export async function POST(request: NextRequest) {
       nftUtxo,
       BigInt(reserveSats),
     );
+
+    // Persist vault record so the vault page and Explore tab can discover it
+    if (result.success && result.sharesCategory) {
+      try {
+        saveVault({
+          sharesCategory: result.sharesCategory,
+          nftCategory: nftUtxo.tokenCategory,
+          nftCommitment: nftUtxo.nftCommitment || '',
+          nftCapability: nftUtxo.nftCapability || 'none',
+          reserveSats: reserveSats.toString(),
+          ownerAddress,
+          createdAt: Math.floor(Date.now() / 1000),
+        });
+      } catch (storeErr) {
+        console.error('[/api/fractionalize] Failed to save vault record:', storeErr);
+        // Non-fatal — transaction is already on-chain
+      }
+    }
 
     return NextResponse.json(result);
   } catch (err) {

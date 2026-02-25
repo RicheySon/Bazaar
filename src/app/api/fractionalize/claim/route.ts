@@ -6,7 +6,7 @@ import { claimProceeds } from '@/lib/bch/fractional-contracts';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { privateKeyHex, claimantAddress, sharesCategory } = body;
+    const { privateKeyHex, claimantAddress, sharesCategory, burnAmount } = body;
 
     if (!privateKeyHex || !claimantAddress || !sharesCategory) {
       return NextResponse.json(
@@ -16,13 +16,17 @@ export async function POST(request: NextRequest) {
     }
 
     const privateKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
+    const burnAmountBigInt = burnAmount ? BigInt(burnAmount) : undefined;
 
-    const result = await claimProceeds(privateKey, claimantAddress, sharesCategory);
+    const result = await claimProceeds(privateKey, claimantAddress, sharesCategory, burnAmountBigInt);
 
-    // Convert payout bigint to string for JSON serialization
+    // Convert bigint fields to strings for JSON serialization
     const response = {
       ...result,
       payout: result.payout !== undefined ? result.payout.toString() : undefined,
+      burnedAmount: (result as any).burnedAmount !== undefined
+        ? (result as any).burnedAmount.toString()
+        : undefined,
     };
 
     return NextResponse.json(response);

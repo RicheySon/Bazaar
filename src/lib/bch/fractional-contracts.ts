@@ -392,10 +392,102 @@ export async function buyoutVault(
 }
 
 /**
- * Claim: burn all owned shares → receive pro-rata BCH.
+ * Redeem all shares: burn 100% of FT supply → receive original NFT back.
+ *
+ *   Input[0]: vault UTXO (vault.redeemAll(pk, sig))
+ *   Input[1]: owner's FT UTXO — exactly 1,000,000 shares
+ *   Input[2+]: BCH fee UTXOs
+ *
+ *   Output[0]: original NFT to owner P2PKH
+ *   Output[1]: change to owner
+ */
+export async function redeemAllShares(
+  privateKey: Uint8Array,
+  ownerAddress: string,
+  sharesCategory: string,
+  reserveSats: bigint,
+  nftCategory: string,
+): Promise<TransactionResult> {
+  try {
+    const signatureTemplate = new SignatureTemplate(privateKey);
+    const claimsContract = buildClaimsContract(sharesCategory);
+    const claimsScriptHash = computeClaimsScriptHash(claimsContract);
+    const vaultContract = buildVaultContract(sharesCategory, TOTAL_SHARES, reserveSats, claimsScriptHash);
+
+    // Fetch vault UTXO (holds original NFT)
+    const vaultUtxos = await vaultContract.getUtxos();
+    const vaultUtxo = vaultUtxos.find(u => u.token?.category === nftCategory && u.token?.nft);
+    if (!vaultUtxo) throw new Error('Vault UTXO not found. The NFT may already have been redeemed or bought out.');
+
+    // Find owner's FT UTXO(s) of sharesCategory
+    const ownerAllUtxos = await getUtxos(ownerAddress);
+    const ftUtxos = ownerAllUtxos.filter(
+      u => u.token?.category === sharesCategory && !u.token?.nft && u.token!.amount > 0n,
+    );
+    const totalOwned = ftUtxos.reduce((s, u) => s + u.token!.amount, 0n);
+
+    if (totalOwned < TOTAL_SHARES) {
+      throw new Error(
+        `You only own ${totalOwned.toLocaleString()} of ${TOTAL_SHARES.toLocaleString()} required shares.`,
+      );
+    }
+    if (ftUtxos.length > 1) {
+      throw new Error(
+        'Your shares are split across multiple UTXOs. Consolidate them into one UTXO first by sending them all to yourself.',
+      );
+    }
+
+    const ftUtxo = ftUtxos[0];
+    const feeUtxos = selectUtxos(ownerAllUtxos.filter(u => !u.token), 3000n);
+    const fee = 2000n;
+    const feeIn = feeUtxos.reduce((s, u) => s + u.satoshis, 0n) + vaultUtxo.satoshis + ftUtxo.satoshis;
+    const change = feeIn - 1000n - fee;
+
+    const nftCap = (vaultUtxo.token!.nft!.capability || 'none') as 'none' | 'mutable' | 'minting';
+    const nftCommitment = vaultUtxo.token!.nft!.commitment || '';
+
+    const builder = new TransactionBuilder({ provider: getProvider() });
+    const pk = signatureTemplate.getPublicKey();
+
+    // Input[0]: vault UTXO — vault.redeemAll(pk, sig)
+    builder.addInput(vaultUtxo, vaultContract.unlock.redeemAll(pk, signatureTemplate));
+    // Input[1]: FT UTXO with all 1M shares (P2PKH, consumed)
+    builder.addInput(ftUtxo, signatureTemplate.unlockP2PKH());
+    // Input[2+]: BCH fee UTXOs
+    builder.addInputs(feeUtxos, signatureTemplate.unlockP2PKH());
+
+    // Output[0]: original NFT to owner
+    builder.addOutput({
+      to: ownerAddress,
+      amount: 1000n,
+      token: {
+        category: nftCategory,
+        amount: 0n,
+        nft: { capability: nftCap, commitment: nftCommitment },
+      },
+    });
+    if (change > 546n) {
+      builder.addOutput({ to: ownerAddress, amount: change });
+    }
+    builder.setLocktime(0);
+
+    const rawHex = builder.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+    return { success: true, txid };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to redeem shares',
+    };
+  }
+}
+
+/**
+ * Claim: burn shares → receive pro-rata BCH.
+ * If burnAmount is omitted, burns the full FT balance.
  *
  *   Input[0]:  claims UTXO (claims.claim)
- *   Input[1]:  claimant FT UTXO — full balance burned
+ *   Input[1]:  claimant FT UTXO — burnAmount burned
  *   Input[2+]: claimant BCH fee UTXOs
  *
  *   Output[0]: updated claims UTXO (if shares remain) OR payout (last claim)
@@ -405,7 +497,8 @@ export async function claimProceeds(
   privateKey: Uint8Array,
   claimantAddress: string,
   sharesCategory: string,
-): Promise<TransactionResult & { payout?: bigint }> {
+  burnAmount?: bigint,
+): Promise<TransactionResult & { payout?: bigint; burnedAmount?: bigint }> {
   try {
     const signatureTemplate = new SignatureTemplate(privateKey);
     const claimsContract = buildClaimsContract(sharesCategory);
@@ -424,21 +517,26 @@ export async function claimProceeds(
     const remainingShares = decodeBigIntLE8(commitment);
     const remainingSats = claimsUtxo.satoshis;
 
-    // Claimant's FT UTXO — burn the full balance
+    // Claimant's FT UTXO
     const claimantAllUtxos = await getUtxos(claimantAddress);
     const ftUtxo = claimantAllUtxos.find(
       u => u.token?.category === sharesCategory && !u.token?.nft && u.token!.amount > 0n,
     );
     if (!ftUtxo) throw new Error('No shares found for this category in your wallet.');
 
-    const burnAmount = ftUtxo.token!.amount;
-    if (burnAmount > remainingShares) {
-      throw new Error(`Burn amount (${burnAmount}) exceeds remaining shares (${remainingShares}).`);
+    // Resolve burn amount — default to full balance
+    const resolvedBurn = burnAmount ?? ftUtxo.token!.amount;
+    if (resolvedBurn <= 0n) throw new Error('Burn amount must be greater than 0.');
+    if (resolvedBurn > ftUtxo.token!.amount) {
+      throw new Error(`Burn amount (${resolvedBurn}) exceeds your balance (${ftUtxo.token!.amount}).`);
+    }
+    if (resolvedBurn > remainingShares) {
+      throw new Error(`Burn amount (${resolvedBurn}) exceeds remaining shares (${remainingShares}).`);
     }
 
     // Pro-rata payout (floor division)
-    const payout = (burnAmount * remainingSats) / remainingShares;
-    const newRemainingShares = remainingShares - burnAmount;
+    const payout = (resolvedBurn * remainingSats) / remainingShares;
+    const newRemainingShares = remainingShares - resolvedBurn;
     const newRemainingSats = remainingSats - payout;
 
     // BCH fee inputs
@@ -449,12 +547,13 @@ export async function claimProceeds(
     const builder = new TransactionBuilder({ provider: getProvider() });
 
     // Input[0]: claims UTXO
-    builder.addInput(claimsUtxo, claimsContract.unlock.claim(burnAmount, claimantPkhBytes));
+    builder.addInput(claimsUtxo, claimsContract.unlock.claim(resolvedBurn, claimantPkhBytes));
     // Input[1]: claimant's FT UTXO (P2PKH, burned)
     builder.addInput(ftUtxo, signatureTemplate.unlockP2PKH());
     // Input[2+]: fee BCH
     builder.addInputs(feeUtxos, signatureTemplate.unlockP2PKH());
 
+    // FT UTXO still contributes its BCH satoshis even though the token is burned
     const feeIn = feeUtxos.reduce((s, u) => s + u.satoshis, 0n) + ftUtxo.satoshis;
     const feeChange = feeIn - fee;
 
@@ -483,7 +582,7 @@ export async function claimProceeds(
 
     const rawHex = builder.build();
     const txid = await getProvider().sendRawTransaction(rawHex);
-    return { success: true, txid, payout };
+    return { success: true, txid, payout, burnedAmount: resolvedBurn };
   } catch (error) {
     return {
       success: false,

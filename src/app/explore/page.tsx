@@ -1,15 +1,25 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Search, PackageOpen, Wallet, Layers, Tag } from 'lucide-react';
+import { Search, PackageOpen, Wallet, Layers, Tag, Lock } from 'lucide-react';
 import { CollectionCard } from '@/components/nft/CollectionCard';
 import { ListNFTModal, type WalletNFT } from '@/components/nft/ListNFTModal';
 import { useWalletStore } from '@/lib/store/wallet-store';
-import { ipfsToHttp, shortenAddress } from '@/lib/utils';
+import { ipfsToHttp, shortenAddress, formatBCH } from '@/lib/utils';
 import Image from 'next/image';
 import Link from 'next/link';
 
-type ExploreMode = 'collections' | 'wallet';
+type ExploreMode = 'collections' | 'vaults' | 'wallet';
+
+interface VaultWithMeta {
+  sharesCategory: string;
+  nftCategory: string;
+  nftCommitment: string;
+  reserveSats: string;
+  ownerAddress: string;
+  createdAt: number;
+  metadata?: { name?: string; image?: string };
+}
 
 interface WalletNFTWithMeta extends WalletNFT {
   metadata?: { name?: string; image?: string; collection?: string };
@@ -23,13 +33,17 @@ export default function ExplorePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<'volume' | 'floor-low' | 'floor-high' | 'newest'>('volume');
 
-  // — Wallet mode state —
+  // — Mode / Wallet state —
   const [mode, setMode] = useState<ExploreMode>('collections');
   const [walletAddress, setWalletAddress] = useState('');
   const [walletNfts, setWalletNfts] = useState<WalletNFTWithMeta[]>([]);
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletError, setWalletError] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
+
+  // — Vaults mode state —
+  const [vaults, setVaults] = useState<VaultWithMeta[]>([]);
+  const [vaultsLoading, setVaultsLoading] = useState(false);
 
   // — List NFT modal —
   const [listingNft, setListingNft] = useState<WalletNFT | null>(null);
@@ -61,6 +75,40 @@ export default function ExplorePage() {
       setWalletAddress(wallet.address);
     }
   }, [mode, wallet?.address]);
+
+  // Load vaults when switching to vaults tab
+  useEffect(() => {
+    if (mode !== 'vaults') return;
+    const load = async () => {
+      setVaultsLoading(true);
+      try {
+        const res = await fetch('/api/vaults');
+        const data = await res.json();
+        const raw: VaultWithMeta[] = data.vaults || [];
+        // Enrich with metadata in parallel (best-effort)
+        const enriched = await Promise.all(
+          raw.map(async (v) => {
+            let metadata: VaultWithMeta['metadata'] = undefined;
+            if (v.nftCommitment) {
+              try {
+                const mRes = await fetch(`/api/metadata?commitment=${encodeURIComponent(v.nftCommitment)}`);
+                if (mRes.ok) metadata = await mRes.json();
+              } catch {
+                // ignore
+              }
+            }
+            return { ...v, metadata };
+          }),
+        );
+        setVaults(enriched);
+      } catch {
+        setVaults([]);
+      } finally {
+        setVaultsLoading(false);
+      }
+    };
+    load();
+  }, [mode]);
 
   const filtered = collections.filter((c) => {
     if (!searchQuery) return true;
@@ -150,6 +198,8 @@ export default function ExplorePage() {
           <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
             {mode === 'collections'
               ? (isLoading ? 'Loading...' : `${sorted.length} collection${sorted.length !== 1 ? 's' : ''}`)
+              : mode === 'vaults'
+              ? (vaultsLoading ? 'Loading...' : `${vaults.length} vault${vaults.length !== 1 ? 's' : ''}`)
               : (hasSearched ? `${walletNfts.length} NFT${walletNfts.length !== 1 ? 's' : ''}` : '')}
           </div>
         </div>
@@ -158,6 +208,7 @@ export default function ExplorePage() {
         <div className="flex items-center gap-1 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
           {[
             { id: 'collections' as const, label: 'Collections', icon: Layers },
+            { id: 'vaults' as const, label: 'Vaults', icon: Lock },
             { id: 'wallet' as const, label: 'By Wallet', icon: Wallet },
           ].map(({ id, label, icon: Icon }) => (
             <button
@@ -229,6 +280,85 @@ export default function ExplorePage() {
                 {sorted.map((col, i) => (
                   <CollectionCard key={col.slug} collection={col} index={i} />
                 ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Vaults mode ──────────────────────────────────── */}
+        {mode === 'vaults' && (
+          <>
+            {vaultsLoading && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="card overflow-hidden animate-pulse">
+                    <div className="h-32" style={{ background: 'var(--bg-secondary)' }} />
+                    <div className="p-3 space-y-2">
+                      <div className="skeleton h-4 w-3/4" />
+                      <div className="skeleton h-3 w-1/2" />
+                      <div className="skeleton h-8" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!vaultsLoading && vaults.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <Lock className="h-12 w-12 mb-3" style={{ color: 'var(--text-muted)' }} />
+                <h3 className="text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
+                  No vaults yet
+                </h3>
+                <p className="text-xs max-w-sm" style={{ color: 'var(--text-muted)' }}>
+                  Fractionalize an NFT from your profile to create the first vault.
+                </p>
+              </div>
+            )}
+
+            {!vaultsLoading && vaults.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {vaults.map((vault) => {
+                  const imgUrl = vault.metadata?.image ? ipfsToHttp(vault.metadata.image) : null;
+                  const name = vault.metadata?.name || `NFT ${vault.nftCategory.slice(0, 8)}…`;
+                  return (
+                    <div key={vault.sharesCategory} className="card overflow-hidden flex flex-col">
+                      {/* Image */}
+                      <div className="relative h-36 shrink-0" style={{ background: 'var(--bg-secondary)' }}>
+                        {imgUrl ? (
+                          <Image src={imgUrl} alt={name} fill className="object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Lock className="h-8 w-8 opacity-20" style={{ color: 'var(--accent)' }} />
+                          </div>
+                        )}
+                        <div
+                          className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                          style={{ background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent)' }}
+                        >
+                          <Lock className="h-2.5 w-2.5" />
+                          Fractional
+                        </div>
+                      </div>
+
+                      {/* Info */}
+                      <div className="p-3 flex flex-col gap-2 flex-1">
+                        <div className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                          {name}
+                        </div>
+                        <div className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                          Reserve: {formatBCH(BigInt(vault.reserveSats))}
+                        </div>
+                        <Link
+                          href={`/fractionalized/${vault.sharesCategory}`}
+                          className="mt-auto w-full py-1.5 rounded-lg text-xs font-medium text-center transition-colors hover:opacity-80"
+                          style={{ background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: 'var(--accent)' }}
+                        >
+                          View Vault
+                        </Link>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>
