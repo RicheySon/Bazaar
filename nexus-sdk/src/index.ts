@@ -72,6 +72,19 @@ export interface NexusCollectionBid {
   updatedAt?: number;
 }
 
+export interface NexusInstantSellInput {
+  privateKeyHex: string;
+  sellerAddress: string;
+  nftUtxo: {
+    txid: string;
+    vout: number;
+    satoshis: string;
+    tokenCategory: string;
+    commitment?: string;
+    capability?: string;
+  };
+}
+
 export interface NexusCollection {
   slug: string;
   name: string;
@@ -139,6 +152,52 @@ export class NexusClient {
     const col = await this.getCollection(slug);
     if (!col) return [];
     return (col.bids ?? []).filter((b) => b.status === 'active');
+  }
+
+  /** Place a collection bid (order book entry). */
+  async placeCollectionBid(params: {
+    privateKeyHex: string;
+    bidderPkh: string;
+    bidderAddress: string;
+    tokenCategory: string;
+    price: string;
+    creatorPkh: string;
+    royaltyBasisPoints?: number;
+    bidSalt?: string;
+  }) {
+    const res = await fetch(`${this.baseUrl}/api/collection-bid`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(`placeCollectionBid failed: HTTP ${res.status}`);
+    return res.json();
+  }
+
+  /** Cancel a collection bid and reclaim BCH. */
+  async cancelCollectionBid(params: {
+    privateKeyHex: string;
+    bidderAddress: string;
+    bid: NexusCollectionBid;
+  }) {
+    const res = await fetch(`${this.baseUrl}/api/collection-bid/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(`cancelCollectionBid failed: HTTP ${res.status}`);
+    return res.json();
+  }
+
+  /** Instant sell: accept the best active collection bid for the NFT. */
+  async instantSell(params: NexusInstantSellInput) {
+    const res = await fetch(`${this.baseUrl}/api/instant-sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(`instantSell failed: HTTP ${res.status}`);
+    return res.json();
   }
 
   /** Fetch only active fixed-price listings in a collection, sorted cheapest first. */
