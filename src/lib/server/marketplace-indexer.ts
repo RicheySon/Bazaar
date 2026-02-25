@@ -14,7 +14,7 @@ import marketplaceArtifact from '@/lib/bch/artifacts/marketplace.json';
 import auctionArtifact from '@/lib/bch/artifacts/auction.json';
 import auctionStateArtifact from '@/lib/bch/artifacts/auction-state.json';
 import collectionBidArtifact from '@/lib/bch/artifacts/collection-bid.json';
-import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload, parseCollectionBidEventPayload } from '@/lib/bch/listing-events';
+import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload, parseCollectionBidEventPayload, parseCollectionBidStatusEventPayload } from '@/lib/bch/listing-events';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
 import { getListingIndexAddress } from '@/lib/bch/config';
 import { commitmentHexToCid } from '@/lib/utils';
@@ -198,6 +198,7 @@ async function parseIndexEventsFromTx(
   bid?: ReturnType<typeof parseBidEventPayload>;
   status?: ReturnType<typeof parseStatusEventPayload>;
   collectionBid?: ReturnType<typeof parseCollectionBidEventPayload>;
+  collectionBidStatus?: ReturnType<typeof parseCollectionBidStatusEventPayload>;
 } | null> {
   const rawTx = await provider.getRawTransaction(txid);
   const decoded = decodeTransaction(hexToBin(rawTx));
@@ -207,6 +208,7 @@ async function parseIndexEventsFromTx(
   let bidPayload: ReturnType<typeof parseBidEventPayload> | null = null;
   let statusPayload: ReturnType<typeof parseStatusEventPayload> | null = null;
   let collectionBidPayload: ReturnType<typeof parseCollectionBidEventPayload> | null = null;
+  let collectionBidStatusPayload: ReturnType<typeof parseCollectionBidStatusEventPayload> | null = null;
   let commitment = '';
 
   for (const output of decoded.outputs) {
@@ -226,6 +228,9 @@ async function parseIndexEventsFromTx(
       if (!collectionBidPayload) {
         collectionBidPayload = parseCollectionBidEventPayload(chunk);
       }
+      if (!collectionBidStatusPayload) {
+        collectionBidStatusPayload = parseCollectionBidStatusEventPayload(chunk);
+      }
     }
   }
 
@@ -239,13 +244,14 @@ async function parseIndexEventsFromTx(
     }
   }
 
-  if (!listingPayload && !bidPayload && !statusPayload && !collectionBidPayload) return null;
+  if (!listingPayload && !bidPayload && !statusPayload && !collectionBidPayload && !collectionBidStatusPayload) return null;
 
   return {
     listing: listingPayload ? { payload: listingPayload, commitment } : undefined,
     bid: bidPayload || undefined,
     status: statusPayload || undefined,
     collectionBid: collectionBidPayload || undefined,
+    collectionBidStatus: collectionBidStatusPayload || undefined,
   };
 }
 
@@ -370,6 +376,10 @@ export async function getMarketplaceData() {
         string,
         { payload: NonNullable<ReturnType<typeof parseCollectionBidEventPayload>>; height: number }
       >();
+      const collectionBidStatusEvents = new Map<
+        string,
+        { status: 'filled' | 'cancelled'; actorPkh: string; txid: string; height: number }
+      >();
 
       for (const entry of history) {
         let event = null as {
@@ -377,6 +387,7 @@ export async function getMarketplaceData() {
           bid?: ReturnType<typeof parseBidEventPayload>;
           status?: ReturnType<typeof parseStatusEventPayload>;
           collectionBid?: ReturnType<typeof parseCollectionBidEventPayload>;
+          collectionBidStatus?: ReturnType<typeof parseCollectionBidStatusEventPayload>;
         } | null;
         try {
           event = await parseIndexEventsFromTx(provider, entry.txid);
@@ -417,6 +428,15 @@ export async function getMarketplaceData() {
         if (event.collectionBid) {
           collectionBidEvents.set(entry.txid, {
             payload: event.collectionBid,
+            height: entry.height,
+          });
+        }
+
+        if (event.collectionBidStatus) {
+          collectionBidStatusEvents.set(event.collectionBidStatus.bidTxid, {
+            status: event.collectionBidStatus.status,
+            actorPkh: event.collectionBidStatus.actorPkh,
+            txid: entry.txid,
             height: entry.height,
           });
         }
@@ -582,7 +602,16 @@ export async function getMarketplaceData() {
               activeUtxo = null;
             }
 
-            const status: 'active' | 'filled' = activeUtxo ? 'active' : 'filled';
+            const statusEvent = collectionBidStatusEvents.get(txid);
+            const statusAtMs = statusEvent
+              ? await getBlockTimeMs(provider, statusEvent.height)
+              : createdAtMs;
+            let status: 'active' | 'filled' | 'cancelled';
+            if (statusEvent) {
+              status = statusEvent.status;
+            } else {
+              status = activeUtxo ? 'active' : 'filled';
+            }
             return {
               txid,
               tokenCategory: payload.tokenCategory,
@@ -596,7 +625,7 @@ export async function getMarketplaceData() {
               status,
               contractAddress,
               createdAt: createdAtMs,
-              updatedAt: createdAtMs,
+              updatedAt: statusAtMs,
             };
           } catch {
             return null;

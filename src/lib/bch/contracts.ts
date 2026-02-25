@@ -12,7 +12,7 @@ import collectionBidArtifact from './artifacts/collection-bid.json';
 import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
 import { hexToBytes, isHexString, utf8ToHex, cidToCommitmentHex, commitmentHexToCid } from '@/lib/utils';
-import { buildListingEventHex, buildBidEventHex, buildStatusEventHex, buildCollectionBidEventHex } from '@/lib/bch/listing-events';
+import { buildListingEventHex, buildBidEventHex, buildStatusEventHex, buildCollectionBidEventHex, buildCollectionBidStatusEventHex } from '@/lib/bch/listing-events';
 import { getListingIndexAddress } from '@/lib/bch/config';
 import { getElectrumProvider, resetElectrumProvider } from '@/lib/bch/electrum';
 
@@ -818,6 +818,10 @@ export async function cancelCollectionBid(
 ): Promise<TransactionResult> {
   try {
     if (!bid.bidSalt) throw new Error('Bid salt missing');
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
     const contract = buildCollectionBidContract(
       bid.bidderPkh,
       bid.tokenCategory,
@@ -842,9 +846,10 @@ export async function cancelCollectionBid(
     );
 
     const price = BigInt(bid.price);
-    const fee = 2000n;
+    const fee = 2500n;
     const totalIn = bidUtxo.satoshis + feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
-    const change = totalIn - price - fee;
+    const fixedOuts = price + 546n; // bidder refund + index dust
+    const change = totalIn - fixedOuts - fee;
 
     tx.from(bidUtxo)
       .fromP2PKH(feeUtxos, signatureTemplate)
@@ -852,6 +857,14 @@ export async function cancelCollectionBid(
       .withTime(0)
       .withHardcodedFee(fee)
       .withoutChange();
+
+    const eventHex = buildCollectionBidStatusEventHex({
+      bidTxid: bid.txid,
+      status: 'cancelled',
+      actorPkh: bid.bidderPkh,
+    });
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     if (change > 546n) {
       tx.to(bidderAddress, change);
@@ -878,6 +891,10 @@ export async function acceptCollectionBid(
 ): Promise<TransactionResult> {
   try {
     if (!bid.bidSalt) throw new Error('Bid salt missing');
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
     const contract = buildCollectionBidContract(
       bid.bidderPkh,
       bid.tokenCategory,
@@ -926,6 +943,14 @@ export async function acceptCollectionBid(
       amount: 0n,
       nft: { capability: nftUtxo.capability || 'none', commitment: nftUtxo.commitment },
     } as any);
+
+    const eventHex = buildCollectionBidStatusEventHex({
+      bidTxid: bid.txid,
+      status: 'filled',
+      actorPkh: sellerPkh,
+    });
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
 
     const txDetails = await tx.send();
     return { success: true, txid: txDetails.txid };

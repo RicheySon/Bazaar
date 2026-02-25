@@ -20,6 +20,7 @@ const PREFIX = new Uint8Array([0x42, 0x5a, 0x41, 0x52]); // "BZAR"
 const BID_PREFIX = new Uint8Array([0x42, 0x5a, 0x42, 0x44]); // "BZBD"
 const STATUS_PREFIX = new Uint8Array([0x42, 0x5a, 0x53, 0x54]); // "BZST"
 const COLLECTION_BID_PREFIX = new Uint8Array([0x42, 0x5a, 0x43, 0x42]); // "BZCB"
+const COLLECTION_BID_STATUS_PREFIX = new Uint8Array([0x42, 0x5a, 0x43, 0x53]); // "BZCS"
 const VERSION = 2;
 const TYPE_FIXED = 0;
 const TYPE_AUCTION = 1;
@@ -28,6 +29,7 @@ const PAYLOAD_LENGTH_V2 = 136;
 const BID_PAYLOAD_LENGTH = 65;
 const STATUS_PAYLOAD_LENGTH = 58;
 const COLLECTION_BID_PAYLOAD_LENGTH = 119;
+const COLLECTION_BID_STATUS_PAYLOAD_LENGTH = 58;
 
 const STATUS_CODES: Record<ListingStatusEvent, number> = {
   sold: 1,
@@ -39,6 +41,16 @@ const STATUS_BY_CODE: Record<number, ListingStatusEvent> = {
   1: 'sold',
   2: 'cancelled',
   3: 'claimed',
+};
+
+const COLLECTION_BID_STATUS_CODES: Record<'filled' | 'cancelled', number> = {
+  filled: 1,
+  cancelled: 2,
+};
+
+const COLLECTION_BID_STATUS_BY_CODE: Record<number, 'filled' | 'cancelled'> = {
+  1: 'filled',
+  2: 'cancelled',
 };
 
 function writeUint16BE(value: number): Uint8Array {
@@ -219,6 +231,38 @@ export function parseCollectionBidEventPayload(payload: Uint8Array): {
   const tokenCategory = bytesToHex(payload.slice(55, 87));
   const bidSalt = bytesToHex(payload.slice(87, 119));
   return { tokenCategory, bidderPkh, creatorPkh, bidSalt, royaltyBasisPoints, price };
+}
+
+export function buildCollectionBidStatusEventHex(params: {
+  bidTxid: string;
+  status: 'filled' | 'cancelled';
+  actorPkh: string;
+}): string {
+  const payload = new Uint8Array(COLLECTION_BID_STATUS_PAYLOAD_LENGTH);
+  payload.set(COLLECTION_BID_STATUS_PREFIX, 0);
+  payload[4] = VERSION;
+  payload[5] = COLLECTION_BID_STATUS_CODES[params.status] || COLLECTION_BID_STATUS_CODES.filled;
+  payload.set(hexToBytes(params.bidTxid), 6);
+  payload.set(hexToBytes(params.actorPkh), 38);
+  return bytesToHex(payload);
+}
+
+export function parseCollectionBidStatusEventPayload(payload: Uint8Array): {
+  bidTxid: string;
+  status: 'filled' | 'cancelled';
+  actorPkh: string;
+} | null {
+  if (payload.length < COLLECTION_BID_STATUS_PAYLOAD_LENGTH) return null;
+  for (let i = 0; i < COLLECTION_BID_STATUS_PREFIX.length; i++) {
+    if (payload[i] !== COLLECTION_BID_STATUS_PREFIX[i]) return null;
+  }
+  if (payload[4] !== VERSION) return null;
+  const statusCode = payload[5];
+  const status = COLLECTION_BID_STATUS_BY_CODE[statusCode];
+  if (!status) return null;
+  const bidTxid = bytesToHex(payload.slice(6, 38));
+  const actorPkh = bytesToHex(payload.slice(38, 58));
+  return { bidTxid, status, actorPkh };
 }
 
 export function buildStatusEventHex(params: {
