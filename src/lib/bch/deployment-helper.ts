@@ -12,7 +12,7 @@ const CHIPNET_PROVIDER = new ElectrumNetworkProvider('chipnet');
  * @param {Array} args - Constructor arguments (Buffer for bytes, BigInt for int)
  * @returns {Object} Contract instance or error object
  */
-export function instantiateContract(artifact, args) {
+export function instantiateContract(artifact: any, args: any[]): any {
   try {
     // Validate argument counts
     if (args.length !== artifact.constructorInputs.length) {
@@ -69,7 +69,7 @@ export function instantiateContract(artifact, args) {
  * @param {Buffer} lockingBytecode - The contract's locking bytecode
  * @returns {string} Script hash as hex string
  */
-export function getContractScriptHash(lockingBytecode) {
+export function getContractScriptHash(lockingBytecode: Buffer): Promise<string> {
   const crypto = await import('crypto');
   const hash1 = crypto.createHash('sha256').update(lockingBytecode).digest();
   const hash2 = crypto.createHash('sha256').update(hash1).digest();
@@ -81,7 +81,7 @@ export function getContractScriptHash(lockingBytecode) {
  * @param {string} filePath - Path to the artifact JSON file
  * @returns {Object} Parsed artifact or error object
  */
-export function loadArtifact(filePath) {
+export function loadArtifact(filePath: string): any {
   try {
     const data = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(data);
@@ -97,7 +97,7 @@ export function loadArtifact(filePath) {
  * @param {string} contractName - Name of the contract
  * @param {Object} result - Result from instantiateContract
  */
-export function printDeploymentResult(contractName, result) {
+export function printDeploymentResult(contractName: string, result: any): void {
   if (result.error) {
     console.error(`❌ ${contractName} Deployment Failed:`);
     console.error(`   Error: ${result.error}`);
@@ -115,7 +115,7 @@ export function printDeploymentResult(contractName, result) {
  * @param {string} deploymentTxid - Transaction ID of the funding transaction (optional)
  * @returns {Object} Deployment record
  */
-export function createDeploymentRecord(contractName, result, deploymentTxid = null) {
+export function createDeploymentRecord(contractName: string, result: any, deploymentTxid: string | null = null): any {
   if (result.error) {
     return {
       name: contractName,
