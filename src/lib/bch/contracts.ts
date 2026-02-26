@@ -581,7 +581,11 @@ export async function buyNFT(
     tx.to(indexAddress, 546n);
     tx.withOpReturn([`0x${eventHex}`]);
 
-    const txDetails = await tx.send();
+    const txDetails = await withTimeout(
+      tx.send(),
+      ELECTRUM_TIMEOUT_MS,
+      `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`
+    );
 
     return {
       success: true,
