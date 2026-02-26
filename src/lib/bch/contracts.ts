@@ -13,7 +13,7 @@ import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
 import { hexToBytes, isHexString, utf8ToHex, cidToCommitmentHex, commitmentHexToCid } from '@/lib/utils';
 import { buildListingEventHex, buildBidEventHex, buildStatusEventHex, buildCollectionBidEventHex, buildCollectionBidStatusEventHex } from '@/lib/bch/listing-events';
-import { getListingIndexAddress } from '@/lib/bch/config';
+import { getListingIndexAddress } from '@/lib/bch/server-config';
 import { getElectrumProvider, resetElectrumProvider } from '@/lib/bch/electrum';
 
 const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
@@ -51,22 +51,22 @@ function buildSourceOutputsJson(sourceOutputs: any[]) {
     valueSatoshis: so.valueSatoshis.toString(),
     token: so.token
       ? {
-          amount: so.token.amount.toString(),
-          category: binToHex(so.token.category),
-          nft: so.token.nft
-            ? {
-                capability: so.token.nft.capability,
-                commitment: binToHex(so.token.nft.commitment),
-              }
-            : undefined,
-        }
+        amount: so.token.amount.toString(),
+        category: binToHex(so.token.category),
+        nft: so.token.nft
+          ? {
+            capability: so.token.nft.capability,
+            commitment: binToHex(so.token.nft.commitment),
+          }
+          : undefined,
+      }
       : undefined,
     contract: so.contract
       ? {
-          abiFunction: so.contract.abiFunction,
-          redeemScript: binToHex(so.contract.redeemScript),
-          artifact: so.contract.artifact,
-        }
+        abiFunction: so.contract.abiFunction,
+        redeemScript: binToHex(so.contract.redeemScript),
+        artifact: so.contract.artifact,
+      }
       : undefined,
   }));
 }
@@ -80,7 +80,7 @@ const ELECTRUM_TIMEOUT_MS = Math.max(
 async function ensureElectrumConnected(electrum: ElectrumNetworkProvider) {
   try {
     if (typeof electrum.connectCluster === 'function') {
-      await electrum.connectCluster().catch(() => {});
+      await electrum.connectCluster().catch(() => { });
     }
   } catch {
     // ignore connection errors; requests may still succeed
@@ -1190,7 +1190,7 @@ export async function buildWcMintParams(
   sourceOutputsJson: object[];
   category: string;
   userPrompt: string;
-  } | { error: string }> {
+} | { error: string }> {
   try {
     wcLog('[WC Mint] Fetching UTXOs for', address);
     const utxos = await getUtxos(address);
@@ -1682,13 +1682,13 @@ export async function buildWcListingParams(params: {
       params.listingType === 'fixed'
         ? buildMarketplaceContract(params.sellerPkh, params.price || 0n, params.creatorPkh, params.royaltyBasisPoints)
         : buildAuctionContract(
-            params.sellerPkh,
-            params.minBid || 0n,
-            params.endTime || 0n,
-            params.creatorPkh,
-            params.royaltyBasisPoints,
-            params.minBidIncrement || 1000n
-          );
+          params.sellerPkh,
+          params.minBid || 0n,
+          params.endTime || 0n,
+          params.creatorPkh,
+          params.royaltyBasisPoints,
+          params.minBidIncrement || 1000n
+        );
 
     const auctionLockingBytecode =
       params.listingType === 'auction' ? getLockingBytecode(contract.tokenAddress) : undefined;
@@ -1708,15 +1708,15 @@ export async function buildWcListingParams(params: {
     const sourceOutputs = inputs.map((utxo) => {
       const token = utxo.token
         ? {
-            amount: utxo.token.amount,
-            category: new Uint8Array(Buffer.from(utxo.token.category, 'hex')),
-            nft: utxo.token.nft
-              ? {
-                  capability: utxo.token.nft.capability,
-                  commitment: hexToBytes(utxo.token.nft.commitment || ''),
-                }
-              : undefined,
-          }
+          amount: utxo.token.amount,
+          category: new Uint8Array(Buffer.from(utxo.token.category, 'hex')),
+          nft: utxo.token.nft
+            ? {
+              capability: utxo.token.nft.capability,
+              commitment: hexToBytes(utxo.token.nft.commitment || ''),
+            }
+            : undefined,
+        }
         : undefined;
 
       return {
@@ -1779,20 +1779,20 @@ export async function buildWcListingParams(params: {
         nft?: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array };
       };
     }> = [
-      {
-        lockingBytecode: contractLockingBytecode,
-        valueSatoshis: nftDust,
-        token: {
-          category: categoryBytes,
-          amount: 0n,
-          nft: {
-            capability: nftUtxo.token.nft.capability as 'none' | 'mutable' | 'minting',
-            commitment: commitmentBytes,
+        {
+          lockingBytecode: contractLockingBytecode,
+          valueSatoshis: nftDust,
+          token: {
+            category: categoryBytes,
+            amount: 0n,
+            nft: {
+              capability: nftUtxo.token.nft.capability as 'none' | 'mutable' | 'minting',
+              commitment: commitmentBytes,
+            },
           },
         },
-      },
-      ...(auctionState && trackingCategory
-        ? [{
+        ...(auctionState && trackingCategory
+          ? [{
             lockingBytecode: getLockingBytecode(auctionState.tokenAddress),
             valueSatoshis: 1000n,
             token: {
@@ -1804,15 +1804,15 @@ export async function buildWcListingParams(params: {
               },
             },
           }] : []),
-      {
-        lockingBytecode: indexLockingBytecode,
-        valueSatoshis: indexDust,
-      },
-      {
-        lockingBytecode: opReturnLockingBytecode,
-        valueSatoshis: 0n,
-      },
-    ];
+        {
+          lockingBytecode: indexLockingBytecode,
+          valueSatoshis: indexDust,
+        },
+        {
+          lockingBytecode: opReturnLockingBytecode,
+          valueSatoshis: 0n,
+        },
+      ];
 
     if (change > 546n) {
       txOutputs.push({
@@ -1938,10 +1938,10 @@ export async function buildWcBuyParams(params: {
         token: isContractInput ? token : undefined,
         contract: isContractInput
           ? {
-              abiFunction: contract.artifact.abi.find((fn) => fn.name === 'buy'),
-              redeemScript: hexToBytes(contract.bytecode),
-              artifact: contract.artifact,
-            }
+            abiFunction: contract.artifact.abi.find((fn) => fn.name === 'buy'),
+            redeemScript: hexToBytes(contract.bytecode),
+            artifact: contract.artifact,
+          }
           : undefined,
       };
     });
@@ -2122,26 +2122,26 @@ export async function buildWcBidParams(params: {
           ? token
           : isStateInput
             ? {
-                category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
-                amount: 0n,
-                nft: {
-                  capability: stateUtxo.token!.nft!.capability,
-                  commitment: hexToBytes(prevBidderPkhHex),
-                },
-              }
+              category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+              amount: 0n,
+              nft: {
+                capability: stateUtxo.token!.nft!.capability,
+                commitment: hexToBytes(prevBidderPkhHex),
+              },
+            }
             : undefined,
         contract: isAuctionInput
           ? {
-              abiFunction: contract.artifact.abi.find((fn) => fn.name === 'bid'),
-              redeemScript: hexToBytes(contract.bytecode),
-              artifact: contract.artifact,
-            }
+            abiFunction: contract.artifact.abi.find((fn) => fn.name === 'bid'),
+            redeemScript: hexToBytes(contract.bytecode),
+            artifact: contract.artifact,
+          }
           : isStateInput
             ? {
-                abiFunction: stateContract.artifact.abi.find((fn) => fn.name === 'bid'),
-                redeemScript: hexToBytes(stateContract.bytecode),
-                artifact: stateContract.artifact,
-              }
+              abiFunction: stateContract.artifact.abi.find((fn) => fn.name === 'bid'),
+              redeemScript: hexToBytes(stateContract.bytecode),
+              artifact: stateContract.artifact,
+            }
             : undefined,
       };
     });
@@ -2357,26 +2357,26 @@ export async function buildWcClaimParams(params: {
           ? token
           : isStateInput
             ? {
-                category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
-                amount: 0n,
-                nft: {
-                  capability: stateUtxo.token!.nft!.capability,
-                  commitment: hexToBytes(stateCommitment),
-                },
-              }
+              category: new Uint8Array(Buffer.from(trackingCategory, 'hex')),
+              amount: 0n,
+              nft: {
+                capability: stateUtxo.token!.nft!.capability,
+                commitment: hexToBytes(stateCommitment),
+              },
+            }
             : undefined,
         contract: isAuctionInput
           ? {
-              abiFunction: contract.artifact.abi.find((fn) => fn.name === 'claim'),
-              redeemScript: hexToBytes(contract.bytecode),
-              artifact: contract.artifact,
-            }
+            abiFunction: contract.artifact.abi.find((fn) => fn.name === 'claim'),
+            redeemScript: hexToBytes(contract.bytecode),
+            artifact: contract.artifact,
+          }
           : isStateInput
             ? {
-                abiFunction: stateContract.artifact.abi.find((fn) => fn.name === 'claim'),
-                redeemScript: hexToBytes(stateContract.bytecode),
-                artifact: stateContract.artifact,
-              }
+              abiFunction: stateContract.artifact.abi.find((fn) => fn.name === 'claim'),
+              redeemScript: hexToBytes(stateContract.bytecode),
+              artifact: stateContract.artifact,
+            }
             : undefined,
       };
     });

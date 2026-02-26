@@ -16,7 +16,7 @@ import auctionStateArtifact from '@/lib/bch/artifacts/auction-state.json';
 import collectionBidArtifact from '@/lib/bch/artifacts/collection-bid.json';
 import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload, parseCollectionBidEventPayload, parseCollectionBidStatusEventPayload } from '@/lib/bch/listing-events';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
-import { getListingIndexAddress } from '@/lib/bch/config';
+import { getListingIndexAddress } from '@/lib/bch/server-config';
 import { commitmentHexToCid } from '@/lib/utils';
 import { getElectrumProvider } from '@/lib/bch/electrum';
 
@@ -165,7 +165,7 @@ async function fetchIndexEventHistory(provider: ElectrumNetworkProvider): Promis
   const scriptHash = scriptHashFromLockingBytecode(decoded.bytecode);
   try {
     if (typeof provider.connectCluster === 'function') {
-      await provider.connectCluster().catch(() => {});
+      await provider.connectCluster().catch(() => { });
     }
   } catch {
     // ignore connection errors; request may still succeed
@@ -454,24 +454,24 @@ export async function getMarketplaceData() {
             const isAuction = payload.listingType === 'auction';
             const auctionContract = isAuction
               ? buildAuctionContractInstance(
-                  provider,
-                  payload.sellerPkh,
-                  payload.creatorPkh,
-                  payload.minBid,
-                  payload.endTime,
-                  payload.royaltyBasisPoints,
-                  payload.minBidIncrement
-                )
+                provider,
+                payload.sellerPkh,
+                payload.creatorPkh,
+                payload.minBid,
+                payload.endTime,
+                payload.royaltyBasisPoints,
+                payload.minBidIncrement
+              )
               : null;
             const contractAddress = isAuction && auctionContract
               ? auctionContract.address
               : buildMarketplaceAddress(
-                  provider,
-                  payload.sellerPkh,
-                  payload.creatorPkh,
-                  payload.price,
-                  payload.royaltyBasisPoints
-                );
+                provider,
+                payload.sellerPkh,
+                payload.creatorPkh,
+                payload.price,
+                payload.royaltyBasisPoints
+              );
 
             const trackingCategory = isAuction ? payload.trackingCategory : undefined;
             let stateCommitment = '';
@@ -542,29 +542,33 @@ export async function getMarketplaceData() {
               );
               let status: string = isActive ? (ended ? 'ended' : 'active') : 'sold';
               if (statusEvent) status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
-              return { type: 'auction' as const, item: {
-                txid, tokenCategory: payload.tokenCategory,
-                minBid: toSatoshisString(payload.minBid),
-                minBidIncrement: toSatoshisString(payload.minBidIncrement),
-                currentBid, endTime: payload.endTime,
-                seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
-                creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
-                commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
-                trackingCategory, auctionStateAddress,
-                currentBidder, bidHistory, status, metadata,
-                createdAt: createdAtMs, updatedAt: statusEvent ? statusAtMs : lastBidAtMs,
-              }};
+              return {
+                type: 'auction' as const, item: {
+                  txid, tokenCategory: payload.tokenCategory,
+                  minBid: toSatoshisString(payload.minBid),
+                  minBidIncrement: toSatoshisString(payload.minBidIncrement),
+                  currentBid, endTime: payload.endTime,
+                  seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
+                  creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
+                  commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
+                  trackingCategory, auctionStateAddress,
+                  currentBidder, bidHistory, status, metadata,
+                  createdAt: createdAtMs, updatedAt: statusEvent ? statusAtMs : lastBidAtMs,
+                }
+              };
             } else {
               let status: string = isActive ? 'active' : 'sold';
               if (statusEvent) status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
-              return { type: 'listing' as const, item: {
-                txid, tokenCategory: payload.tokenCategory,
-                price: toSatoshisString(payload.price),
-                seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
-                creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
-                commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
-                status, metadata, createdAt: createdAtMs, updatedAt: statusAtMs,
-              }};
+              return {
+                type: 'listing' as const, item: {
+                  txid, tokenCategory: payload.tokenCategory,
+                  price: toSatoshisString(payload.price),
+                  seller: pkhToCashAddress(payload.sellerPkh), sellerPkh: payload.sellerPkh,
+                  creator: pkhToCashAddress(payload.creatorPkh), creatorPkh: payload.creatorPkh,
+                  commitment, royaltyBasisPoints: payload.royaltyBasisPoints,
+                  status, metadata, createdAt: createdAtMs, updatedAt: statusAtMs,
+                }
+              };
             }
           } catch {
             return null;

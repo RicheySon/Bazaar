@@ -1,11 +1,7 @@
 // BCH Chipnet Network Configuration
-
-import {
-  addressContentsToLockingBytecode,
-  lockingBytecodeToCashAddress,
-  LockingBytecodeType,
-} from '@bitauth/libauth';
-import { hexToBytes } from '@/lib/utils';
+// NOTE: Keep this file free of @bitauth/libauth imports so client components
+// can safely import constants (CHIPNET_CONFIG, getExplorerTxUrl, etc.)
+// without pulling in the topLevelAwait module. See server-config.ts.
 
 export const CHIPNET_CONFIG = {
   network: 'chipnet' as const,
@@ -53,28 +49,8 @@ export function getDeployedContractAddress(contractName: keyof typeof DEPLOYED_C
   return DEPLOYED_CONTRACTS[contractName];
 }
 
-export function getListingIndexAddress(): string {
-  const explicit = process.env.NEXT_PUBLIC_LISTING_INDEX_ADDRESS;
-  if (explicit) return explicit;
-
-  const network = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet' | 'testnet') || 'chipnet';
-  const prefix = network === 'mainnet' ? 'bitcoincash' : 'bchtest';
-
-  const payload = hexToBytes(MARKETPLACE_CONFIG.listingIndexPkh);
-  const lockingBytecode = addressContentsToLockingBytecode({
-    payload,
-    type: LockingBytecodeType.p2pkh,
-  });
-
-  const result = lockingBytecodeToCashAddress({
-    bytecode: lockingBytecode,
-    prefix,
-    tokenSupport: false,
-  });
-
-  if (typeof result === 'string') return '';
-  return result.address;
-}
+// getListingIndexAddress has been moved to server-config.ts to keep this file
+// free of @bitauth/libauth (which uses topLevelAwait and crashes client bundles).
 
 export function getExplorerTxUrl(txid: string): string {
   return `${CHIPNET_CONFIG.explorerUrl}/tx/${txid}`;
