@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     };
 
     const result = await mintFromCollection(
-      privateKey, pkh, address, tokenAddress || address, token, newCommitment, capability
+      privateKey, pkh, address, token, newCommitment, capability
     );
 
     return NextResponse.json(result);
