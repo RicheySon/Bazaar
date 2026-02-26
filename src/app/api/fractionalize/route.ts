@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fractionalizeNFT } from '@/lib/bch/fractional-contracts';
+import { buildP2PKHContract } from '@/lib/bch/contracts';
 import { saveVault } from '@/lib/server/vaults-store';
 
 // POST /api/fractionalize
@@ -25,11 +26,23 @@ export async function POST(request: NextRequest) {
 
     const privateKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
 
+    // If no explicit token-capable address provided, derive the P2SH32 token address
+    // for the user's generated wallet (P2PKH contract token address).
+    const finalOwnerTokenAddress = ownerTokenAddress || (() => {
+      try {
+        if (!ownerPkh) return ownerAddress;
+        const userContract = buildP2PKHContract(ownerPkh);
+        return (userContract as any).tokenAddress || ownerAddress;
+      } catch (e) {
+        return ownerAddress;
+      }
+    })();
+
     const result = await fractionalizeNFT(
       privateKey,
       ownerPkh,
       ownerAddress,
-      ownerTokenAddress || ownerAddress,
+      finalOwnerTokenAddress,
       nftUtxo,
       BigInt(reserveSats),
     );
