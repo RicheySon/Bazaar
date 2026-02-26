@@ -165,8 +165,8 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
     : 0;
 
   // Build typed items list
+  // Show all items, including sold
   const allItems: (NFTListing | AuctionListing)[] = (collection.items || [])
-    .filter((item: any) => item.status === 'active')
     .map((item: any) => {
       if (item.minBid !== undefined) {
         return {

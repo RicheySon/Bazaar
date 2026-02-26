@@ -192,6 +192,7 @@ export default function NFTDetailPage() {
   const sellerAddr = listing?.sellerAddress || '';
   const creatorAddr = listing?.creatorAddress || '';
   const isActiveListing = listing?.status === 'active';
+  const isSold = listing?.status === 'sold';
 
   return (
     <div className="px-4 sm:px-6 lg:px-8 py-8">
@@ -209,7 +210,7 @@ export default function NFTDetailPage() {
           {/* Left - Image */}
           <div>
             <div
-              className="aspect-square rounded-2xl overflow-hidden"
+              className="aspect-square rounded-2xl overflow-hidden relative"
               style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
             >
               {displayImage ? (
@@ -221,13 +222,13 @@ export default function NFTDetailPage() {
                     muted
                     playsInline
                     controls
-                    className="w-full h-full object-cover"
+                    className={`w-full h-full object-cover${isSold ? ' opacity-60 grayscale' : ''}`}
                   />
                 ) : (
                   <img
                     src={displayImage}
                     alt={displayName}
-                    className="w-full h-full object-cover"
+                    className={`w-full h-full object-cover${isSold ? ' opacity-60 grayscale' : ''}`}
                     onError={(e) => {
                       const next = imgFallbackRef.current + 1;
                       if (next < imageGateways.length) {
@@ -250,6 +251,12 @@ export default function NFTDetailPage() {
                     </div>
                     <p className="text-sm" style={{ color: 'var(--text-muted)' }}>CashTokens NFT</p>
                   </div>
+                </div>
+              )}
+              {/* Sold overlay */}
+              {isSold && (
+                <div className="absolute inset-0 flex items-center justify-center z-20">
+                  <span className="bg-black/70 text-white text-lg font-bold px-8 py-3 rounded-2xl">SOLD</span>
                 </div>
               )}
             </div>

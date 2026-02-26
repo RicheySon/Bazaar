@@ -26,6 +26,7 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
   const { getExplorerTxUrl } = require('@/lib/bch/config');
   const explorerUrl = getExplorerTxUrl(listing.txid);
 
+  const isSold = listing.status === 'sold';
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -42,7 +43,7 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
                 src={imageUrl}
                 alt={listing.metadata?.name || 'NFT'}
                 fill
-                className="object-cover transition-transform duration-300 group-hover:scale-105"
+                className={`object-cover transition-transform duration-300 group-hover:scale-105${isSold ? ' opacity-60 grayscale' : ''}`}
                 sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
                 mimeType={(listing.metadata as any)?.mimeType}
               />
@@ -51,6 +52,12 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
                 <div className="text-4xl font-bold font-mono" style={{ color: 'var(--accent)', opacity: 0.2 }}>
                   {listing.tokenCategory?.slice(0, 4) || 'NFT'}
                 </div>
+              </div>
+            )}
+            {/* Sold overlay */}
+            {isSold && (
+              <div className="absolute inset-0 flex items-center justify-center z-20">
+                <span className="bg-black/70 text-white text-xs font-bold px-4 py-2 rounded-xl">SOLD</span>
               </div>
             )}
           </Link>
