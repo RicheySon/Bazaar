@@ -1408,7 +1408,6 @@ export async function mintFromCollection(
   privateKey: Uint8Array,
   pkh: string,
   address: string,
-  tokenAddress: string,
   mintingToken: MintingTokenUtxo,
   newCommitment: string,          // IPFS CID for the new child NFT
   newCapability: 'none' | 'mutable' = 'none',
@@ -1417,7 +1416,13 @@ export async function mintFromCollection(
     const userContract = buildP2PKHContract(pkh);
     const signatureTemplate = new SignatureTemplate(privateKey);
     const pk = signatureTemplate.getPublicKey();
-    const outputAddress = tokenAddress || address;
+    // Always derive a token-capable address server-side from the user's address to
+    // ensure CashTokens outputs are sent to an address that supports tokens.
+    const decoded = decodeCashAddress(address);
+    if (typeof decoded === 'string') throw new Error('Invalid address: ' + decoded);
+    const tokenAddrResult = lockingBytecodeToCashAddress({ bytecode: getLockingBytecode(address), prefix: decoded.prefix, tokenSupport: true });
+    if (typeof tokenAddrResult === 'string') throw new Error('Failed to derive token address: ' + tokenAddrResult);
+    const outputAddress = tokenAddrResult.address;
 
     // Gather BCH UTXOs for fees (exclude the minting token UTXO itself)
     const allUtxos = await getUtxos(address);
