@@ -1,0 +1,301 @@
+{
+  "network": "chipnet",
+  "explorUrl": "https://chipnet.chaingraph.cash",
+  "contracts": [
+    {
+      "name": "Marketplace",
+      "file": "marketplace.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "sellerPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the seller"
+        },
+        {
+          "name": "price",
+          "type": "int",
+          "description": "Price in satoshis"
+        },
+        {
+          "name": "creatorPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the creator"
+        },
+        {
+          "name": "royaltyBasisPoints",
+          "type": "int",
+          "description": "Royalty percentage in basis points (1/100th of a percent)"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Instantiate contract with seller, price, creator, and royalty args",
+        "2. Get contract address (P2SH address from locking bytecode)",
+        "3. Fund contract address with BCH + NFT UTXO",
+        "4. Record contract address and first transaction ID",
+        "5. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "sellerPkh": "2222222222222222222222222222222222222222",
+        "price": 100000,
+        "creatorPkh": "3333333333333333333333333333333333333333",
+        "royaltyBasisPoints": 1000
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    },
+    {
+      "name": "Auction",
+      "file": "auction.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "sellerPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the seller"
+        },
+        {
+          "name": "minBid",
+          "type": "int",
+          "description": "Minimum bid amount in satoshis"
+        },
+        {
+          "name": "endTime",
+          "type": "int",
+          "description": "Auction end time (unix timestamp)"
+        },
+        {
+          "name": "creatorPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the creator"
+        },
+        {
+          "name": "royaltyBasisPoints",
+          "type": "int",
+          "description": "Royalty percentage in basis points"
+        },
+        {
+          "name": "minBidIncrement",
+          "type": "int",
+          "description": "Minimum bid increment in satoshis"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Instantiate contract with seller, minBid, endTime, creator, royalty, and minBidIncrement args",
+        "2. Get contract address (P2SH address from locking bytecode)",
+        "3. Fund contract address with BCH + NFT UTXO",
+        "4. Record contract address and first transaction ID",
+        "5. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "sellerPkh": "2222222222222222222222222222222222222222",
+        "minBid": 10000,
+        "endTime": 1740249600,
+        "creatorPkh": "3333333333333333333333333333333333333333",
+        "royaltyBasisPoints": 1000,
+        "minBidIncrement": 1000
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    },
+    {
+      "name": "AuctionState",
+      "file": "auction-state.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "sellerPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the seller"
+        },
+        {
+          "name": "auctionLockingBytecode",
+          "type": "bytes35",
+          "description": "Locking bytecode of the auction contract (35 bytes)"
+        },
+        {
+          "name": "trackingCategory",
+          "type": "bytes32",
+          "description": "Token category for the mutable tracking NFT"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Deploy Auction contract first to get its locking bytecode",
+        "2. Instantiate AuctionState with seller, auctionLockingBytecode, and trackingCategory args",
+        "3. Get contract address (P2SH address from locking bytecode)",
+        "4. Fund contract address with BCH + mutable tracking NFT UTXO",
+        "5. Record contract address and first transaction ID",
+        "6. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "sellerPkh": "2222222222222222222222222222222222222222",
+        "auctionLockingBytecode": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345",
+        "trackingCategory": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    },
+    {
+      "name": "CollectionBid",
+      "file": "collection-bid.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "bidderPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the bidder"
+        },
+        {
+          "name": "tokenCategory",
+          "type": "bytes32",
+          "description": "Token category of the collection"
+        },
+        {
+          "name": "bidSalt",
+          "type": "bytes32",
+          "description": "Salt to differentiate contract addresses"
+        },
+        {
+          "name": "price",
+          "type": "int",
+          "description": "Bid price in satoshis"
+        },
+        {
+          "name": "creatorPkh",
+          "type": "bytes20",
+          "description": "Public key hash of the creator"
+        },
+        {
+          "name": "royaltyBasisPoints",
+          "type": "int",
+          "description": "Royalty percentage in basis points"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Instantiate contract with bidder, tokenCategory, bidSalt, price, creator, and royalty args",
+        "2. Get contract address (P2SH address from locking bytecode)",
+        "3. Fund contract address with BCH (bid amount)",
+        "4. Record contract address and first transaction ID",
+        "5. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "bidderPkh": "2222222222222222222222222222222222222222",
+        "tokenCategory": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bidSalt": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "price": 100000,
+        "creatorPkh": "3333333333333333333333333333333333333333",
+        "royaltyBasisPoints": 1000
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    },
+    {
+      "name": "FractionalVault",
+      "file": "fractional-vault.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "sharesCategory",
+          "type": "bytes32",
+          "description": "Token category of the share FTs"
+        },
+        {
+          "name": "totalShares",
+          "type": "int",
+          "description": "Total number of shares (e.g., 1000000)"
+        },
+        {
+          "name": "reserveSats",
+          "type": "int",
+          "description": "Buyout price in satoshis"
+        },
+        {
+          "name": "claimsScriptHash",
+          "type": "bytes32",
+          "description": "Script hash of the FractionalClaims contract"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Deploy FractionalClaims contract first to get its script hash",
+        "2. Instantiate FractionalVault with sharesCategory, totalShares, reserveSats, and claimsScriptHash args",
+        "3. Get contract address (P2SH address from locking bytecode)",
+        "4. Fund contract address with BCH + original NFT UTXO",
+        "5. Record contract address and first transaction ID",
+        "6. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "sharesCategory": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "totalShares": 1000000,
+        "reserveSats": 1000000,
+        "claimsScriptHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    },
+    {
+      "name": "FractionalClaims",
+      "file": "fractional-claims.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "sharesCategory",
+          "type": "bytes32",
+          "description": "Token category of the share FTs (must match vault's sharesCategory)"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Instantiate contract with sharesCategory arg",
+        "2. Get contract address (P2SH address from locking bytecode)",
+        "3. Fund contract address with dust BCH + mutable tracking NFT UTXO",
+        "4. Record contract address and first transaction ID",
+        "5. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "sharesCategory": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    },
+    {
+      "name": "P2PKH",
+      "file": "p2pkh.json",
+      "status": "ready_for_deployment",
+      "constructorInputs": [
+        {
+          "name": "pkh",
+          "type": "bytes20",
+          "description": "Public key hash"
+        }
+      ],
+      "deploymentSteps": [
+        "1. Instantiate contract with pkh arg",
+        "2. Get contract address (P2SH address from locking bytecode)",
+        "3. Fund contract address with BCH UTXOs as needed",
+        "4. Record contract address and first transaction ID",
+        "5. Update src/lib/bch/config.ts with contract address"
+      ],
+      "exampleConstructorArgs": {
+        "pkh": "2222222222222222222222222222222222222222"
+      },
+      "deployedAddress": null,
+      "deploymentTxid": null,
+      "deploymentDate": null
+    }
+  ],
+  "deploymentOrder": [
+    "FractionalClaims",
+    "FractionalVault",
+    "Marketplace",
+    "Auction",
+    "AuctionState",
+    "CollectionBid",
+    "P2PKH"
+  ],
+  "notes": "Deploy in the order specified to ensure all dependencies are met. FractionalClaims must be deployed before FractionalVault (for claimsScriptHash). Auction must be deployed before AuctionState (for auctionLockingBytecode). All other contracts are independent."
+}
