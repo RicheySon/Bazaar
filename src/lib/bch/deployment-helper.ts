@@ -50,10 +50,8 @@ export function instantiateContract(artifact: any, args: any[]): any {
     return {
       success: true,
       address: contract.address,
-      lockingBytecode: contract.lockingBytecode,
-      lockingBytecodeHex: Buffer.isBuffer(contract.lockingBytecode)
-        ? contract.lockingBytecode.toString('hex')
-        : Buffer.from(contract.lockingBytecode).toString('hex'),
+      // cashscript >=0.10: 'bytecode' is a hex string (replaces 'lockingBytecode')
+      lockingBytecodeHex: contract.bytecode,
     };
   } catch (err: any) {
     return {
