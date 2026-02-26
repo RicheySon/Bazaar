@@ -67,12 +67,12 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
             href={explorerUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="absolute bottom-2 right-2 bg-[var(--accent)] text-white text-[10px] px-2 py-1 rounded shadow-lg flex items-center gap-1 opacity-90 hover:opacity-100 transition-opacity z-10"
+            className="absolute bottom-2 right-2 bg-[var(--accent)] text-white text-xs px-3 py-1.5 rounded-lg shadow-lg flex items-center gap-1.5 opacity-95 hover:opacity-100 transition-opacity z-10 font-medium"
             title="View on Explorer"
             tabIndex={0}
             onClick={e => e.stopPropagation()}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-3 w-3">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-3.5 w-3.5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H19.5V12M19.5 6L10.5 15M6 19.5H12" />
             </svg>
             Explorer
