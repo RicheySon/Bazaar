@@ -4,14 +4,15 @@
 import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact, TransactionBuilder } from 'cashscript';
 import { decodeCashAddress, lockingBytecodeToCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode, decodeTransaction, hexToBin } from '@bitauth/libauth';
 import { encodeNullDataScript, Op } from '@cashscript/utils';
-import type { NFTListing, AuctionListing, TransactionResult } from '@/lib/types';
+import type { NFTListing, AuctionListing, CollectionBid, TransactionResult } from '@/lib/types';
 import marketplaceArtifact from './artifacts/marketplace.json';
 import auctionArtifact from './artifacts/auction.json';
 import auctionStateArtifact from './artifacts/auction-state.json';
+import collectionBidArtifact from './artifacts/collection-bid.json';
 import p2pkhArtifact from './artifacts/p2pkh.json';
 import { Utxo } from 'cashscript'; // Import Utxo type
 import { hexToBytes, isHexString, utf8ToHex, cidToCommitmentHex, commitmentHexToCid } from '@/lib/utils';
-import { buildListingEventHex, buildBidEventHex, buildStatusEventHex } from '@/lib/bch/listing-events';
+import { buildListingEventHex, buildBidEventHex, buildStatusEventHex, buildCollectionBidEventHex, buildCollectionBidStatusEventHex } from '@/lib/bch/listing-events';
 import { getListingIndexAddress } from '@/lib/bch/config';
 import { getElectrumProvider, resetElectrumProvider } from '@/lib/bch/electrum';
 
@@ -244,6 +245,27 @@ export function buildAuctionContract(
   return new Contract(
     auctionArtifact as Artifact,
     [sellerPkhBytes, minBid, endTime, creatorPkhBytes, royaltyBasisPoints, minBidIncrement],
+    { provider: electrum }
+  );
+}
+
+export function buildCollectionBidContract(
+  bidderPkh: string,
+  tokenCategory: string,
+  bidSalt: string,
+  price: bigint,
+  creatorPkh: string,
+  royaltyBasisPoints: bigint
+): Contract {
+  const electrum = getProvider();
+  const bidderPkhBytes = Uint8Array.from(Buffer.from(bidderPkh, 'hex'));
+  const tokenCategoryBytes = Uint8Array.from(Buffer.from(tokenCategory, 'hex'));
+  const bidSaltBytes = Uint8Array.from(Buffer.from(bidSalt, 'hex'));
+  const creatorPkhBytes = Uint8Array.from(Buffer.from(creatorPkh, 'hex'));
+
+  return new Contract(
+    collectionBidArtifact as Artifact,
+    [bidderPkhBytes, tokenCategoryBytes, bidSaltBytes, price, creatorPkhBytes, royaltyBasisPoints],
     { provider: electrum }
   );
 }
@@ -711,6 +733,231 @@ export async function cancelListing(
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Failed to cancel listing',
+    };
+  }
+}
+
+// Create a collection bid (order book entry)
+export async function createCollectionBid(
+  privateKey: Uint8Array,
+  tokenCategory: string,
+  bidSalt: string,
+  price: bigint,
+  creatorPkh: string,
+  royaltyBasisPoints: bigint,
+  bidderPkh: string,
+  bidderAddress: string
+): Promise<TransactionResult> {
+  try {
+    if (!bidSalt || bidSalt.length !== 64) {
+      throw new Error('Invalid bid salt');
+    }
+    const bidContract = buildCollectionBidContract(
+      bidderPkh,
+      tokenCategory,
+      bidSalt,
+      price,
+      creatorPkh,
+      royaltyBasisPoints
+    );
+    const userContract = buildP2PKHContract(bidderPkh);
+    const signatureTemplate = new SignatureTemplate(privateKey);
+    const bidderPk = signatureTemplate.getPublicKey();
+
+    const fundingUtxos = await getUtxos(bidderAddress);
+    const feeUtxos = selectUtxos(fundingUtxos.filter(u => !u.token), price + 4000n);
+
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) throw new Error('Listing index address not configured.');
+
+    const eventHex = buildCollectionBidEventHex({
+      tokenCategory,
+      bidderPkh,
+      creatorPkh,
+      bidSalt,
+      royaltyBasisPoints: Number(royaltyBasisPoints),
+      price,
+    });
+
+    const totalIn = feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const fee = 2000n;
+    const fixedOuts = price + 546n; // bid output + index dust
+    const change = totalIn - fixedOuts - fee;
+
+    const tx = userContract.functions.spend(bidderPk, signatureTemplate)
+      .fromP2PKH(feeUtxos, signatureTemplate)
+      .to(bidContract.address, price)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+
+    if (change > 546n) {
+      tx.to(bidderAddress, change);
+    }
+
+    const rawHex = await tx.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+
+    return { success: true, txid };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create collection bid',
+    };
+  }
+}
+
+// Bidder cancels a collection bid and reclaims BCH
+export async function cancelCollectionBid(
+  bidderPrivateKey: Uint8Array,
+  bid: CollectionBid,
+  bidderAddress: string
+): Promise<TransactionResult> {
+  try {
+    if (!bid.bidSalt) throw new Error('Bid salt missing');
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+    const contract = buildCollectionBidContract(
+      bid.bidderPkh,
+      bid.tokenCategory,
+      bid.bidSalt,
+      BigInt(bid.price),
+      bid.creatorPkh,
+      BigInt(bid.royaltyBasisPoints)
+    );
+
+    const contractUtxos = await contract.getUtxos();
+    const bidUtxo = contractUtxos.find(u => !u.token);
+    if (!bidUtxo) throw new Error('Active bid UTXO not found');
+
+    const signatureTemplate = new SignatureTemplate(bidderPrivateKey);
+    const bidderPk = signatureTemplate.getPublicKey();
+    const tx = contract.functions.cancel(bidderPk, signatureTemplate);
+
+    const fundingUtxos = await getUtxos(bidderAddress);
+    const feeUtxos = selectUtxos(
+      fundingUtxos.filter(u => !u.token && u.txid !== bidUtxo.txid),
+      3000n
+    );
+
+    const price = BigInt(bid.price);
+    const fee = 2500n;
+    const totalIn = bidUtxo.satoshis + feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const fixedOuts = price + 546n; // bidder refund + index dust
+    const change = totalIn - fixedOuts - fee;
+
+    tx.from(bidUtxo)
+      .fromP2PKH(feeUtxos, signatureTemplate)
+      .to(bidderAddress, price)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    const eventHex = buildCollectionBidStatusEventHex({
+      bidTxid: bid.txid,
+      status: 'cancelled',
+      actorPkh: bid.bidderPkh,
+    });
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+
+    if (change > 546n) {
+      tx.to(bidderAddress, change);
+    }
+
+    return {
+      success: true,
+      txid: (await tx.send()).txid,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to cancel collection bid',
+    };
+  }
+}
+
+// Seller accepts a collection bid by providing an NFT from the target category
+export async function acceptCollectionBid(
+  sellerPrivateKey: Uint8Array,
+  bid: CollectionBid,
+  sellerAddress: string,
+  nftUtxo: { txid: string; vout: number; satoshis: bigint; commitment: string; capability?: 'none' | 'mutable' | 'minting' }
+): Promise<TransactionResult> {
+  try {
+    if (!bid.bidSalt) throw new Error('Bid salt missing');
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) {
+      throw new Error('Listing index address not configured.');
+    }
+    const contract = buildCollectionBidContract(
+      bid.bidderPkh,
+      bid.tokenCategory,
+      bid.bidSalt,
+      BigInt(bid.price),
+      bid.creatorPkh,
+      BigInt(bid.royaltyBasisPoints)
+    );
+
+    const contractUtxos = await contract.getUtxos();
+    const bidUtxo = contractUtxos.find(u => !u.token);
+    if (!bidUtxo) throw new Error('Active bid UTXO not found');
+
+    const signatureTemplate = new SignatureTemplate(sellerPrivateKey);
+    const sellerPkh = getPkhHexFromAddress(sellerAddress);
+
+    const nftInput: Utxo = {
+      txid: nftUtxo.txid,
+      vout: nftUtxo.vout,
+      satoshis: nftUtxo.satoshis,
+      token: {
+        category: bid.tokenCategory,
+        amount: 0n,
+        nft: { capability: nftUtxo.capability || 'none', commitment: nftUtxo.commitment },
+      },
+    };
+
+    const fundingUtxos = await getUtxos(sellerAddress);
+    const feeUtxos = selectUtxos(
+      fundingUtxos.filter(u => !u.token && u.txid !== bidUtxo.txid && u.txid !== nftUtxo.txid),
+      3000n
+    );
+
+    const price = BigInt(bid.price);
+    const royalty = (price * BigInt(bid.royaltyBasisPoints)) / 10000n;
+    const sellerAmount = price - royalty;
+
+    const tx = contract.functions.accept(sellerPkh)
+      .from(bidUtxo)
+      .fromP2PKH([nftInput, ...feeUtxos], signatureTemplate);
+
+    tx.to(sellerAddress, sellerAmount); // Output 0
+    tx.to(bid.creator, royalty);       // Output 1
+    tx.to(bid.bidder, 1000n, {
+      category: bid.tokenCategory,
+      amount: 0n,
+      nft: { capability: nftUtxo.capability || 'none', commitment: nftUtxo.commitment },
+    } as any);
+
+    const eventHex = buildCollectionBidStatusEventHex({
+      bidTxid: bid.txid,
+      status: 'filled',
+      actorPkh: sellerPkh,
+    });
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+
+    const txDetails = await tx.send();
+    return { success: true, txid: txDetails.txid };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to accept collection bid',
     };
   }
 }

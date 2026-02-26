@@ -1,0 +1,127 @@
+{
+  "contractName": "CollectionBid",
+  "constructorInputs": [
+    {
+      "name": "bidderPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "tokenCategory",
+      "type": "bytes32"
+    },
+    {
+      "name": "bidSalt",
+      "type": "bytes32"
+    },
+    {
+      "name": "price",
+      "type": "int"
+    },
+    {
+      "name": "creatorPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "royaltyBasisPoints",
+      "type": "int"
+    }
+  ],
+  "abi": [
+    {
+      "name": "accept",
+      "inputs": [
+        {
+          "name": "sellerPkh",
+          "type": "bytes20"
+        }
+      ]
+    },
+    {
+      "name": "cancel",
+      "inputs": [
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "s",
+          "type": "sig"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_6 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_2 OP_PICK OP_3 OP_ROLL OP_EQUALVERIFY OP_1 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_ROT OP_EQUALVERIFY OP_OVER OP_4 OP_ROLL OP_MUL 1027 OP_DIV OP_ROT OP_OVER OP_SUB 76a914 OP_6 OP_ROLL OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_3 OP_ROLL OP_CAT 88ac OP_CAT OP_1 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_2 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_2 OP_OUTPUTTOKENCATEGORY OP_1 OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_2 OP_OUTPUTTOKENAMOUNT OP_1 OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_2 OP_OUTPUTTOKENCOMMITMENT OP_1 OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_ELSE OP_6 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_2 OP_PICK OP_3 OP_ROLL OP_EQUALVERIFY OP_5 OP_PICK OP_HASH160 OP_OVER OP_EQUALVERIFY OP_6 OP_ROLL OP_6 OP_ROLL OP_CHECKSIGVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_ROT OP_GREATERTHANOREQUAL OP_NIP OP_NIP OP_NIP OP_ENDIF",
+  "source": "// BAZAAR - Collection Bid (Order Book) Contract\n// BCH Chipnet - CashScript v0.10+\n// Locks BCH for a bid on any NFT in a collection (tokenCategory).\n// Any seller can accept by providing an NFT from the category.\n\npragma cashscript >=0.10.0;\n\ncontract CollectionBid(\n    bytes20 bidderPkh,\n    bytes32 tokenCategory,\n    bytes32 bidSalt,\n    int price,\n    bytes20 creatorPkh,\n    int royaltyBasisPoints\n) {\n    // Seller accepts the bid by providing an NFT from the target category.\n    // Input[0]: this bid UTXO (BCH)\n    // Input[1]: seller's NFT UTXO (must match tokenCategory)\n    // Output[0]: seller payment (price - royalty)\n    // Output[1]: creator royalty\n    // Output[2]: NFT to bidder\n    function accept(bytes20 sellerPkh) {\n        // Use bidSalt to prevent unused-parameter errors (salt differentiates contract address)\n        require(bidSalt == bidSalt);\n        // Ensure seller provides the correct category NFT\n        require(tx.inputs[1].tokenCategory.split(32)[0] == tokenCategory);\n\n        // Calculate royalty and seller proceeds\n        int royaltyAmount = price * royaltyBasisPoints / 10000;\n        int sellerAmount = price - royaltyAmount;\n\n        // Output 0: Seller receives payment minus royalty\n        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);\n        require(tx.outputs[0].value >= sellerAmount);\n\n        // Output 1: Creator receives royalty payment\n        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);\n        require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);\n        require(tx.outputs[1].value >= royaltyAmount);\n\n        // Output 2: NFT goes to bidder\n        bytes25 bidderLockingBytecode = new LockingBytecodeP2PKH(bidderPkh);\n        require(tx.outputs[2].lockingBytecode == bidderLockingBytecode);\n        require(tx.outputs[2].tokenCategory == tx.inputs[1].tokenCategory);\n        require(tx.outputs[2].tokenAmount == tx.inputs[1].tokenAmount);\n        require(tx.outputs[2].nftCommitment == tx.inputs[1].nftCommitment);\n    }\n\n    // Bidder can cancel and reclaim BCH\n    function cancel(pubkey pk, sig s) {\n        require(bidSalt == bidSalt);\n        require(hash160(pk) == bidderPkh);\n        require(checkSig(s, pk));\n        bytes25 bidderLockingBytecode = new LockingBytecodeP2PKH(bidderPkh);\n        require(tx.outputs[0].lockingBytecode == bidderLockingBytecode);\n        require(tx.outputs[0].value >= price);\n    }\n}\n",
+  "debug": {
+    "bytecode": "5679009c635279537a8851ce01207f757b8878547a95021027967b78940376a914567a7e0288ac7e00cd8800cca1690376a914537a7e0288ac7e51cd8851cca1690376a9147c7e0288ac7e52cd8852d151ce8852d351d09d52d251cf877767567a519d5279537a885579a97888567a567aad0376a9147c7e0288ac7e00cd8800cc7ba277777768",
+    "sourceMap": "22:4:48:5;;;;;24:16:24:23;;:27::34;;:8::36:1;26:26:26:27:0;:16::42:1;:49::51:0;:16::52:1;:::55;:59::72:0;:8::74:1;29:28:29:33:0;:36::54;;:28:::1;:57::62:0;:28:::1;30:27:30:32:0;:35::48;:27:::1;33:40:33:75:0;:65::74;;:40::75:1;;;34:27:34:28:0;:16::45:1;:8::72;35:27:35:28:0;:16::35:1;:::51;:8::53;38:41:38:77:0;:66::76;;:41::77:1;;;39:27:39:28:0;:16::45:1;:8::73;40:27:40:28:0;:16::35:1;:::52;:8::54;43:40:43:75:0;:65::74;:40::75:1;;;44:27:44:28:0;:16::45:1;:8::72;45:27:45:28:0;:16::43:1;:57::58:0;:47::73:1;:8::75;46:27:46:28:0;:16::41:1;:55::56:0;:45::69:1;:8::71;47:27:47:28:0;:16::43:1;:57::58:0;:47::73:1;:8::75;22:4:48:5;;51::58::0;;;;52:16:52:23;;:27::34;;:8::36:1;53:24:53:26:0;;:16::27:1;:31::40:0;:8::42:1;54:25:54:26:0;;:28::30;;:8::33:1;55:40:55:75:0;:65::74;:40::75:1;;;56:27:56:28:0;:16::45:1;:8::72;57:27:57:28:0;:16::35:1;:39::44:0;:8::46:1;51:4:58:5;;;8:0:59:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 15,
+        "line": 24
+      },
+      {
+        "ip": 22,
+        "line": 26
+      },
+      {
+        "ip": 40,
+        "line": 34
+      },
+      {
+        "ip": 44,
+        "line": 35
+      },
+      {
+        "ip": 53,
+        "line": 39
+      },
+      {
+        "ip": 57,
+        "line": 40
+      },
+      {
+        "ip": 65,
+        "line": 44
+      },
+      {
+        "ip": 70,
+        "line": 45
+      },
+      {
+        "ip": 75,
+        "line": 46
+      },
+      {
+        "ip": 81,
+        "line": 47
+      },
+      {
+        "ip": 91,
+        "line": 52
+      },
+      {
+        "ip": 96,
+        "line": 53
+      },
+      {
+        "ip": 101,
+        "line": 54
+      },
+      {
+        "ip": 109,
+        "line": 56
+      },
+      {
+        "ip": 114,
+        "line": 57
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-02-25T19:42:21.674Z"
+}

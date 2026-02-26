@@ -90,6 +90,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
       publicKey: Array.from(newWalletData.publicKey).map(b => b.toString(16).padStart(2, '0')).join(''),
       isConnected: true,
     });
+    setConnectionType('generated');
     resetAndClose();
   };
 
@@ -109,6 +110,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
         publicKey: Array.from(wallet.publicKey).map(b => b.toString(16).padStart(2, '0')).join(''),
         isConnected: true,
       });
+      setConnectionType('generated');
       resetAndClose();
     } catch (err) {
       setError('Failed to restore wallet. Check your seed phrase.');

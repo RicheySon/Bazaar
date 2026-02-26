@@ -31,6 +31,28 @@ export const MARKETPLACE_CONFIG = {
     process.env.NEXT_PUBLIC_LISTING_INDEX_PKH || '2222222222222222222222222222222222222222',
 } as const;
 
+// Deployed contract addresses on BCH Chipnet
+// These are set via environment variables or default to null (awaiting deployment)
+// To deploy contracts, follow the guide in docs/CONTRACT_DEPLOYMENT.md
+export const DEPLOYED_CONTRACTS = {
+  marketplace: process.env.NEXT_PUBLIC_CONTRACT_MARKETPLACE || null,
+  auction: process.env.NEXT_PUBLIC_CONTRACT_AUCTION || null,
+  auctionState: process.env.NEXT_PUBLIC_CONTRACT_AUCTION_STATE || null,
+  collectionBid: process.env.NEXT_PUBLIC_CONTRACT_COLLECTION_BID || null,
+  fractionalVault: process.env.NEXT_PUBLIC_CONTRACT_FRACTIONAL_VAULT || null,
+  fractionalClaims: process.env.NEXT_PUBLIC_CONTRACT_FRACTIONAL_CLAIMS || null,
+  p2pkh: process.env.NEXT_PUBLIC_CONTRACT_P2PKH || null,
+};
+
+/**
+ * Get a deployed contract address
+ * @param contractName - Name of the contract (e.g., 'marketplace', 'auction')
+ * @returns Contract address or null if not deployed
+ */
+export function getDeployedContractAddress(contractName: keyof typeof DEPLOYED_CONTRACTS): string | null {
+  return DEPLOYED_CONTRACTS[contractName];
+}
+
 export function getListingIndexAddress(): string {
   const explicit = process.env.NEXT_PUBLIC_LISTING_INDEX_ADDRESS;
   if (explicit) return explicit;

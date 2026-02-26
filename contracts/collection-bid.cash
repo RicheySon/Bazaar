@@ -1,0 +1,59 @@
+// BAZAAR - Collection Bid (Order Book) Contract
+// BCH Chipnet - CashScript v0.10+
+// Locks BCH for a bid on any NFT in a collection (tokenCategory).
+// Any seller can accept by providing an NFT from the category.
+
+pragma cashscript >=0.10.0;
+
+contract CollectionBid(
+    bytes20 bidderPkh,
+    bytes32 tokenCategory,
+    bytes32 bidSalt,
+    int price,
+    bytes20 creatorPkh,
+    int royaltyBasisPoints
+) {
+    // Seller accepts the bid by providing an NFT from the target category.
+    // Input[0]: this bid UTXO (BCH)
+    // Input[1]: seller's NFT UTXO (must match tokenCategory)
+    // Output[0]: seller payment (price - royalty)
+    // Output[1]: creator royalty
+    // Output[2]: NFT to bidder
+    function accept(bytes20 sellerPkh) {
+        // Use bidSalt to prevent unused-parameter errors (salt differentiates contract address)
+        require(bidSalt == bidSalt);
+        // Ensure seller provides the correct category NFT
+        require(tx.inputs[1].tokenCategory.split(32)[0] == tokenCategory);
+
+        // Calculate royalty and seller proceeds
+        int royaltyAmount = price * royaltyBasisPoints / 10000;
+        int sellerAmount = price - royaltyAmount;
+
+        // Output 0: Seller receives payment minus royalty
+        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);
+        require(tx.outputs[0].value >= sellerAmount);
+
+        // Output 1: Creator receives royalty payment
+        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);
+        require(tx.outputs[1].lockingBytecode == creatorLockingBytecode);
+        require(tx.outputs[1].value >= royaltyAmount);
+
+        // Output 2: NFT goes to bidder
+        bytes25 bidderLockingBytecode = new LockingBytecodeP2PKH(bidderPkh);
+        require(tx.outputs[2].lockingBytecode == bidderLockingBytecode);
+        require(tx.outputs[2].tokenCategory == tx.inputs[1].tokenCategory);
+        require(tx.outputs[2].tokenAmount == tx.inputs[1].tokenAmount);
+        require(tx.outputs[2].nftCommitment == tx.inputs[1].nftCommitment);
+    }
+
+    // Bidder can cancel and reclaim BCH
+    function cancel(pubkey pk, sig s) {
+        require(bidSalt == bidSalt);
+        require(hash160(pk) == bidderPkh);
+        require(checkSig(s, pk));
+        bytes25 bidderLockingBytecode = new LockingBytecodeP2PKH(bidderPkh);
+        require(tx.outputs[0].lockingBytecode == bidderLockingBytecode);
+        require(tx.outputs[0].value >= price);
+    }
+}

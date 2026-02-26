@@ -1,0 +1,11 @@
+{
+  "contract": "P2PKH",
+  "address": "bchtest:pdl35znqhy5tals7xxe9f6v7vtcarqfa322tnd3wfk89sss75n2eqjvllsscz",
+  "lockingBytecode": "3134616161616161616161616161616161616161616161616161616161616161616161616161616161613738613938386163",
+  "scriptHash": "d69db6fbd26334a3b44a81fc6064f19ef62bb55310fb2440c7ef04406121a88c",
+  "constructorArgs": {
+    "pkh": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "timestamp": "2026-02-26T01:25:04.442Z",
+  "status": "instantiated_not_funded"
+}
