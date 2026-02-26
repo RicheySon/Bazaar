@@ -279,6 +279,27 @@ export async function fractionalizeNFT(
     }
 
     const rawHex = await tx.build();
+
+    // Debug: if FRACTIONALIZE_DRY_RUN=true, don't broadcast — return and save raw hex for inspection
+    if (process.env.FRACTIONALIZE_DRY_RUN === 'true' || process.env.DEBUG_FRACTIONALIZE_RAW === 'true') {
+      try {
+        // attempt to persist the raw hex for offline inspection
+        // write to repository scripts/debug-output for easy retrieval
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        const path = require('path');
+        const outDir = path.join(process.cwd(), 'scripts', 'debug-output');
+        if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+        const fileName = `fractionalize-raw-${Date.now()}.txt`;
+        fs.writeFileSync(path.join(outDir, fileName), rawHex, 'utf8');
+        console.log('[fractionalizeNFT] Dry-run saved raw tx to', path.join('scripts', 'debug-output', fileName));
+      } catch (e) {
+        console.error('[fractionalizeNFT] Failed to write debug raw tx:', e);
+      }
+
+      return { success: true, rawHex, tokenCategory: sharesCategory, sharesCategory, vaultInfo } as any;
+    }
+
     const txid = await getProvider().sendRawTransaction(rawHex);
 
     return { success: true, txid, tokenCategory: sharesCategory, sharesCategory, vaultInfo };
