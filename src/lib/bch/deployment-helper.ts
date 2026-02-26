@@ -22,7 +22,7 @@ export function instantiateContract(artifact: any, args: any[]): any {
     }
 
     // Validate argument types (basic)
-    artifact.constructorInputs.forEach((input, i) => {
+    artifact.constructorInputs.forEach((input: any, i: number) => {
       const arg = args[i];
       if (input.type.startsWith('bytes') && !Buffer.isBuffer(arg)) {
         return {
@@ -57,7 +57,7 @@ export function instantiateContract(artifact: any, args: any[]): any {
         ? contract.lockingBytecode.toString('hex')
         : Buffer.from(contract.lockingBytecode).toString('hex'),
     };
-  } catch (err) {
+  } catch (err: any) {
     return {
       error: err.message,
     };
@@ -69,7 +69,7 @@ export function instantiateContract(artifact: any, args: any[]): any {
  * @param {Buffer} lockingBytecode - The contract's locking bytecode
  * @returns {string} Script hash as hex string
  */
-export function getContractScriptHash(lockingBytecode: Buffer): Promise<string> {
+export async function getContractScriptHash(lockingBytecode: Buffer): Promise<string> {
   const crypto = await import('crypto');
   const hash1 = crypto.createHash('sha256').update(lockingBytecode).digest();
   const hash2 = crypto.createHash('sha256').update(hash1).digest();
@@ -85,7 +85,7 @@ export function loadArtifact(filePath: string): any {
   try {
     const data = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(data);
-  } catch (err) {
+  } catch (err: any) {
     return {
       error: `Failed to load artifact: ${err.message}`,
     };
