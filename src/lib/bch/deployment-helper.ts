@@ -1,10 +1,8 @@
 // BCH Chipnet Contract Deployment Helper
 // This utility provides helper functions for deploying CashScript contracts on BCH Chipnet
 
-import { Contract, ElectrumNetworkProvider } from 'cashscript';
+import { Contract } from 'cashscript';
 import fs from 'fs';
-
-const CHIPNET_PROVIDER = new ElectrumNetworkProvider('chipnet');
 
 /**
  * Instantiate a CashScript contract with the given artifact and constructor arguments
@@ -46,8 +44,8 @@ export function instantiateContract(artifact: any, args: any[]): any {
       }
     });
 
-    // Instantiate contract
-    const contract = new Contract(artifact, args, CHIPNET_PROVIDER);
+    // Instantiate contract (without provider - we only need address and bytecode)
+    const contract = new Contract(artifact, args);
 
     return {
       success: true,
