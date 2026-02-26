@@ -21,6 +21,11 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
     ? ipfsToHttp(listing.metadata.image)
     : `/api/placeholder/${listing.tokenCategory?.slice(0, 8) || 'default'}`;
 
+  // Import getExplorerTxUrl here to avoid circular import issues
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getExplorerTxUrl } = require('@/lib/bch/config');
+  const explorerUrl = getExplorerTxUrl(listing.txid);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -28,10 +33,10 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
       transition={{ delay: index * 0.04, duration: 0.25 }}
       className="group"
     >
-      <Link href={linkHref}>
-        <div className="card overflow-hidden cursor-pointer">
-          {/* Image */}
-          <div className="relative aspect-square overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
+      <div className="card overflow-hidden cursor-pointer">
+        {/* Image */}
+        <div className="relative aspect-square overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
+          <Link href={linkHref} tabIndex={-1} className="block focus:outline-none">
             {listing.metadata?.image ? (
               <MediaDisplay
                 src={imageUrl}
@@ -48,63 +53,79 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
                 </div>
               </div>
             )}
+          </Link>
 
-            {/* Badge */}
-            <div className="absolute top-2 left-2">
-              {isAuction ? (
-                <span className="badge badge-blue">
-                  <Gavel className="h-3 w-3" />
-                  Auction
-                </span>
-              ) : (
-                <span className="badge badge-green">
-                  <Tag className="h-3 w-3" />
-                  Fixed
-                </span>
-              )}
-            </div>
+          {/* View on Explorer Button */}
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute bottom-2 right-2 bg-[var(--accent)] text-white text-[10px] px-2 py-1 rounded shadow-lg flex items-center gap-1 opacity-90 hover:opacity-100 transition-opacity z-10"
+            title="View on Explorer"
+            tabIndex={0}
+            onClick={e => e.stopPropagation()}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-3 w-3">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H19.5V12M19.5 6L10.5 15M6 19.5H12" />
+            </svg>
+            Explorer
+          </a>
 
-            {/* Timer */}
-            {auction && auction.endTime > 0 && (
-              <div className="absolute top-2 right-2">
-                <span className="badge" style={{ background: 'rgba(0,0,0,0.7)', color: '#fff' }}>
-                  <Clock className="h-3 w-3" />
-                  {timeRemaining(auction.endTime)}
-                </span>
-              </div>
+          {/* Badge */}
+          <div className="absolute top-2 left-2">
+            {isAuction ? (
+              <span className="badge badge-blue">
+                <Gavel className="h-3 w-3" />
+                Auction
+              </span>
+            ) : (
+              <span className="badge badge-green">
+                <Tag className="h-3 w-3" />
+                Fixed
+              </span>
             )}
           </div>
 
-          {/* Info */}
-          <div className="p-3">
-            <h3 className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-              {listing.metadata?.name || `Token #${listing.tokenCategory?.slice(0, 8)}`}
-            </h3>
-
-            <div className="flex items-center gap-1 text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-              <User className="h-3 w-3" />
-              <span>{shortenAddress(listing.creatorAddress || listing.sellerAddress, 4)}</span>
+          {/* Timer */}
+          {auction && auction.endTime > 0 && (
+            <div className="absolute top-2 right-2">
+              <span className="badge" style={{ background: 'rgba(0,0,0,0.7)', color: '#fff' }}>
+                <Clock className="h-3 w-3" />
+                {timeRemaining(auction.endTime)}
+              </span>
             </div>
+          )}
+        </div>
 
-            <div className="flex items-center justify-between mt-2 pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
-              <div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                  {isAuction ? 'Current Bid' : 'Price'}
-                </div>
-                <div className="text-sm font-semibold font-mono" style={{ color: 'var(--accent)' }}>
-                  {formatBCH(isAuction && auction ? auction.currentBid || auction.minBid : listing.price)}
-                </div>
+        {/* Info */}
+        <div className="p-3">
+          <h3 className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+            {listing.metadata?.name || `Token #${listing.tokenCategory?.slice(0, 8)}`}
+          </h3>
+
+          <div className="flex items-center gap-1 text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            <User className="h-3 w-3" />
+            <span>{shortenAddress(listing.creatorAddress || listing.sellerAddress, 4)}</span>
+          </div>
+
+          <div className="flex items-center justify-between mt-2 pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
+            <div>
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                {isAuction ? 'Current Bid' : 'Price'}
               </div>
-
-              {listing.royaltyBasisPoints > 0 && (
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                  {listing.royaltyBasisPoints / 100}% royalty
-                </div>
-              )}
+              <div className="text-sm font-semibold font-mono" style={{ color: 'var(--accent)' }}>
+                {formatBCH(isAuction && auction ? auction.currentBid || auction.minBid : listing.price)}
+              </div>
             </div>
+
+            {listing.royaltyBasisPoints > 0 && (
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                {listing.royaltyBasisPoints / 100}% royalty
+              </div>
+            )}
           </div>
         </div>
-      </Link>
+      </div>
     </motion.div>
   );
 }
