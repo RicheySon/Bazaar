@@ -1487,7 +1487,9 @@ export async function mintFromCollection(
     }
 
     const rawHex = await tx.build();
-    const txid = await getProvider().sendRawTransaction(rawHex);
+    // Add timeout to broadcast
+    const ELECTRUM_TIMEOUT_MS = 15000;
+    const txid = await withTimeout(getProvider().sendRawTransaction(rawHex), ELECTRUM_TIMEOUT_MS, `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`);
     return { success: true, txid, tokenCategory: mintingToken.category };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Failed to mint from collection' };
@@ -2603,7 +2605,9 @@ export async function mintNFT(
     // Build the signed tx hex, then broadcast directly — bypasses CashScript's
     // debug() call which would fail when all inputs are P2PKH (no contract inputs).
     const rawHex = await tx.build();
-    const txid = await getProvider().sendRawTransaction(rawHex);
+    // Add timeout to broadcast
+    const ELECTRUM_TIMEOUT_MS = 15000;
+    const txid = await withTimeout(getProvider().sendRawTransaction(rawHex), ELECTRUM_TIMEOUT_MS, `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`);
 
     return {
       success: true,
@@ -2626,4 +2630,204 @@ export function normalizeCommitment(commitment: string): string {
 
 export function decodeCommitmentToCid(commitment: string): string {
   return commitmentHexToCid(commitment);
+}
+
+// ─── Bazaar Liquidity Pool (InstantSellPool) ──────────────────────────────────
+import instantSellArtifact from './artifacts/instant-sell.json';
+import { buildPoolEventHex, buildPoolStatusEventHex } from '@/lib/bch/listing-events';
+import type { LiquidityPool } from '@/lib/types';
+
+function buildInstantSellPoolContract(
+  operatorPkh: string,
+  tokenCategory: string,
+  poolSalt: string,
+  creatorPkh: string,
+  royaltyBasisPoints: bigint,
+  price: bigint
+): Contract {
+  const electrum = getProvider();
+  return new Contract(
+    instantSellArtifact as Artifact,
+    [
+      hexToBytes(operatorPkh),
+      hexToBytes(tokenCategory),
+      hexToBytes(poolSalt),
+      hexToBytes(creatorPkh),
+      royaltyBasisPoints,
+      price,
+    ],
+    { provider: electrum, addressType: 'p2sh32' }
+  );
+}
+
+// Deploy a new liquidity pool (operator locks BCH in the pool contract)
+export async function deployLiquidityPool(
+  privateKey: Uint8Array,
+  operatorPkh: string,
+  operatorAddress: string,
+  tokenCategory: string,
+  poolSalt: string,
+  creatorPkh: string,
+  royaltyBasisPoints: bigint,
+  price: bigint,
+  depositSats: bigint
+): Promise<TransactionResult & { contractAddress?: string }> {
+  try {
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) throw new Error('Listing index address not configured.');
+
+    const poolContract = buildInstantSellPoolContract(
+      operatorPkh, tokenCategory, poolSalt, creatorPkh, royaltyBasisPoints, price
+    );
+    const userContract = buildP2PKHContract(operatorPkh);
+    const signatureTemplate = new SignatureTemplate(privateKey);
+    const operatorPk = signatureTemplate.getPublicKey();
+
+    const fundingUtxos = await getUtxos(operatorAddress);
+    const feeUtxos = selectUtxos(fundingUtxos.filter(u => !u.token), depositSats + 4000n);
+
+    const eventHex = buildPoolEventHex({
+      tokenCategory, operatorPkh, creatorPkh, poolSalt,
+      royaltyBasisPoints: Number(royaltyBasisPoints), price,
+    });
+
+    const totalIn = feeUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const fee = 2000n;
+    const fixedOuts = depositSats + 546n;
+    const change = totalIn - fixedOuts - fee;
+
+    const tx = userContract.functions.spend(operatorPk, signatureTemplate)
+      .fromP2PKH(feeUtxos, signatureTemplate)
+      .to(poolContract.address, depositSats)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+    if (change > 546n) tx.to(operatorAddress, change);
+
+    const rawHex = await tx.build();
+    const txid = await getProvider().sendRawTransaction(rawHex);
+    return { success: true, txid, contractAddress: poolContract.address };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to deploy pool' };
+  }
+}
+
+// Seller sells NFT to the liquidity pool (instant sell)
+export async function sellNFTToPool(
+  sellerPrivateKey: Uint8Array,
+  pool: LiquidityPool,
+  sellerAddress: string,
+  nftUtxo: { txid: string; vout: number; satoshis: bigint; commitment: string; capability?: 'none' | 'mutable' | 'minting' }
+): Promise<TransactionResult> {
+  try {
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) throw new Error('Listing index address not configured.');
+
+    const poolContract = buildInstantSellPoolContract(
+      pool.operatorPkh, pool.tokenCategory, pool.poolSalt,
+      pool.creatorPkh, BigInt(pool.royaltyBasisPoints), BigInt(pool.price)
+    );
+
+    const contractUtxos = await poolContract.getUtxos();
+    const poolUtxo = contractUtxos.find(u => !u.token && u.satoshis >= BigInt(pool.price));
+    if (!poolUtxo) throw new Error('Pool has insufficient liquidity');
+
+    const signatureTemplate = new SignatureTemplate(sellerPrivateKey);
+    const sellerPkh = getPkhHexFromAddress(sellerAddress);
+
+    const nftInput: Utxo = {
+      txid: nftUtxo.txid,
+      vout: nftUtxo.vout,
+      satoshis: nftUtxo.satoshis,
+      token: {
+        category: pool.tokenCategory,
+        amount: 0n,
+        nft: { capability: nftUtxo.capability || 'none', commitment: nftUtxo.commitment },
+      },
+    };
+
+    const fundingUtxos = await getUtxos(sellerAddress);
+    const feeUtxos = selectUtxos(
+      fundingUtxos.filter(u => !u.token && u.txid !== nftUtxo.txid),
+      3000n
+    );
+
+    const price = BigInt(pool.price);
+    const royalty = (price * BigInt(pool.royaltyBasisPoints)) / 10000n;
+    const sellerAmount = price - royalty;
+    const newPoolValue = poolUtxo.satoshis - price;
+
+    const tx = poolContract.functions.sell(sellerPkh)
+      .from(poolUtxo)
+      .fromP2PKH([nftInput, ...feeUtxos], signatureTemplate);
+
+    // Output[0]: seller payment
+    tx.to(sellerAddress, sellerAmount);
+    // Output[1]: creator royalty
+    tx.to(pool.creator, royalty);
+    // Output[2]: NFT to operator
+    tx.to(pool.operator, 1000n, {
+      category: pool.tokenCategory,
+      amount: 0n,
+      nft: { capability: nftUtxo.capability || 'none', commitment: nftUtxo.commitment },
+    } as any);
+    // Output[3]: pool recreated
+    tx.to(poolContract.address, newPoolValue);
+
+    const eventHex = buildPoolStatusEventHex({ poolTxid: pool.txid, status: 'sold', actorPkh: sellerPkh });
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+
+    const txDetails = await tx.send();
+    return { success: true, txid: txDetails.txid };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to sell to pool' };
+  }
+}
+
+// Operator withdraws BCH from pool (close the pool)
+export async function withdrawFromPool(
+  operatorPrivateKey: Uint8Array,
+  pool: LiquidityPool,
+  operatorAddress: string
+): Promise<TransactionResult> {
+  try {
+    const indexAddress = getListingIndexAddress();
+    if (!indexAddress) throw new Error('Listing index address not configured.');
+
+    const poolContract = buildInstantSellPoolContract(
+      pool.operatorPkh, pool.tokenCategory, pool.poolSalt,
+      pool.creatorPkh, BigInt(pool.royaltyBasisPoints), BigInt(pool.price)
+    );
+
+    const contractUtxos = await poolContract.getUtxos();
+    const poolUtxo = contractUtxos.find(u => !u.token);
+    if (!poolUtxo) throw new Error('Pool UTXO not found');
+
+    const signatureTemplate = new SignatureTemplate(operatorPrivateKey);
+    const operatorPk = signatureTemplate.getPublicKey();
+
+    const fee = 1500n;
+    const withdrawAmount = poolUtxo.satoshis - fee;
+
+    const tx = poolContract.functions.withdraw(operatorPk, signatureTemplate)
+      .from(poolUtxo)
+      .to(operatorAddress, withdrawAmount)
+      .withTime(0)
+      .withHardcodedFee(fee)
+      .withoutChange();
+
+    const operatorPkh = getPkhHexFromAddress(operatorAddress);
+    const eventHex = buildPoolStatusEventHex({ poolTxid: pool.txid, status: 'withdrawn', actorPkh: operatorPkh });
+    tx.to(indexAddress, 546n);
+    tx.withOpReturn([`0x${eventHex}`]);
+
+    const txDetails = await tx.send();
+    return { success: true, txid: txDetails.txid };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to withdraw from pool' };
+  }
 }

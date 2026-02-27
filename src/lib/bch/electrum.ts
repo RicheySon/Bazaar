@@ -137,6 +137,7 @@ export function getElectrumProvider(network: Network = NETWORK): ElectrumNetwork
   // Without this, every getUtxos() call disconnects and reconnects (30s overhead each time).
   cachedProvider = new ElectrumNetworkProvider(network, cluster, true);
   // Pre-connect the cluster once so it's ready for all subsequent requests.
-  void cachedProvider.connectCluster();
+  // .catch() is required — without it, a connection failure becomes an unhandledRejection.
+  void cachedProvider.connectCluster().catch(() => {});
   return cachedProvider;
 }

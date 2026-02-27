@@ -300,7 +300,10 @@ export async function fractionalizeNFT(
       return { success: true, rawHex, tokenCategory: sharesCategory, sharesCategory, vaultInfo } as any;
     }
 
-    const txid = await getProvider().sendRawTransaction(rawHex);
+    // Add timeout to broadcast
+    const { withTimeout } = require('./contracts');
+    const ELECTRUM_TIMEOUT_MS = 15000;
+    const txid = await withTimeout(getProvider().sendRawTransaction(rawHex), ELECTRUM_TIMEOUT_MS, `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`);
 
     return { success: true, txid, tokenCategory: sharesCategory, sharesCategory, vaultInfo };
   } catch (error) {

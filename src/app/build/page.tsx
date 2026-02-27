@@ -157,32 +157,32 @@ function CodeBlock({ code, lang = 'typescript' }: { code: string; lang?: string 
 }
 
 const sdkExamples = {
-  initClient: `import { NexusClient } from './nexus-sdk/src';
+  initClient: `import { BazaarClient } from './bazaar-sdk/src';
 
 // Same-origin (Bazaar UI) — no base URL needed
-const nexus = new NexusClient();
+const bazaar = new BazaarClient();
 
 // Cross-origin — point at your Bazaar deployment
-const nexus = new NexusClient('https://bazaar-three-gamma.vercel.app');
+const bazaar = new BazaarClient('https://bazaar-three-gamma.vercel.app');
 
 // All methods return plain objects with string satoshi amounts
 // Convert to BigInt when doing arithmetic: BigInt(listing.price)`,
 
-  fetchFloor: `const nexus = new NexusClient();
+  fetchFloor: `const bazaar = new BazaarClient();
 
 // Get floor price (returns BigInt satoshis, or null)
-const floor = await nexus.getFloorPrice('pixel-punks');
+const floor = await bazaar.getFloorPrice('pixel-punks');
 if (floor !== null) {
   console.log('Floor:', Number(floor) / 1e8, 'BCH');
 }
 
 // Get all active fixed-price listings, cheapest first
-const listings = await nexus.getListings('pixel-punks');
+const listings = await bazaar.getListings('pixel-punks');
 console.log('Cheapest listing:', listings[0]?.metadata?.name);
 console.log('Price:', listings[0]?.price, 'sats');
 
 // Get full collection stats
-const col = await nexus.getCollection('pixel-punks');
+const col = await bazaar.getCollection('pixel-punks');
 console.log('Total supply:', col?.totalSupply);
 console.log('Owners:', col?.ownerCount);`,
 
@@ -194,7 +194,7 @@ async function buyNFT(listingTxid: string, buyerKey: string, buyerAddress: strin
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      listings: [await nexus.getListing(listingTxid)].map(l => ({
+      listings: [await bazaar.getListing(listingTxid)].map(l => ({
         txid: l!.txid, tokenCategory: l!.tokenCategory,
         price: l!.price, seller: l!.seller, sellerPkh: l!.sellerPkh,
         creator: l!.creator, creatorPkh: l!.creatorPkh,
@@ -208,16 +208,16 @@ async function buyNFT(listingTxid: string, buyerKey: string, buyerAddress: strin
   return results[0]; // { success, purchaseTxid?, error? }
 }`,
 
-  activity: `const nexus = new NexusClient();
+  activity: `const bazaar = new BazaarClient();
 
 // Global activity feed (all collections)
-const globalFeed = await nexus.getActivity();
+const globalFeed = await bazaar.getActivity();
 globalFeed.slice(0, 5).forEach(sale => {
   console.log(sale.metadata?.name, 'sold for', sale.price, 'sats');
 });
 
 // Collection-specific activity
-const colFeed = await nexus.getActivity('pixel-punks');
+const colFeed = await bazaar.getActivity('pixel-punks');
 console.log('Recent sales in Pixel Punks:', colFeed.length);`,
 };
 
@@ -232,7 +232,7 @@ export default function BuildPage() {
     { id: 'api' as const,       label: 'REST API',      icon: Terminal },
     { id: 'explorer' as const,  label: 'API Explorer',  icon: Globe },
     { id: 'contracts' as const, label: 'Contracts',     icon: FileCode },
-    { id: 'sdk' as const,       label: 'Nexus SDK',     icon: Package },
+    { id: 'sdk' as const,       label: 'Bazaar SDK',     icon: Package },
   ];
 
   const exampleMenu: [ExampleKey, string][] = [
@@ -265,7 +265,7 @@ export default function BuildPage() {
             { icon: Terminal,  title: 'REST API',    desc: 'HTTP endpoints for all marketplace data and actions', color: 'var(--accent)' },
             { icon: Globe,     title: 'No Auth',     desc: 'Public read endpoints — no API key required',         color: 'var(--accent-blue)' },
             { icon: Shield,    title: 'CashScript',  desc: 'Open-source contracts for atomic swaps and auctions', color: 'var(--accent-purple)' },
-            { icon: Package,   title: 'Nexus SDK',   desc: 'TypeScript client — embed floor prices & buy buttons in any app', color: 'var(--accent-orange)' },
+            { icon: Package,   title: 'Bazaar SDK',   desc: 'TypeScript client — embed floor prices & buy buttons in any app', color: 'var(--accent-orange)' },
           ].map(({ icon: Icon, title, desc, color }) => (
             <div key={title} className="card p-4">
               <div className="flex items-center gap-3 mb-2">
@@ -442,7 +442,7 @@ export default function BuildPage() {
           </div>
         )}
 
-        {/* Nexus SDK Tab */}
+        {/* Bazaar SDK Tab */}
         {activeTab === 'sdk' && (
           <div className="space-y-6">
             {/* Intro */}
@@ -450,7 +450,7 @@ export default function BuildPage() {
               <div className="flex items-center gap-2 mb-2">
                 <Package className="h-4 w-4" style={{ color: 'var(--accent-orange)' }} />
                 <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  NexusClient — TypeScript SDK
+                  BazaarClient — TypeScript SDK
                 </h3>
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-mono"
                   style={{ background: 'color-mix(in srgb, var(--accent-orange) 12%, transparent)', color: 'var(--accent-orange)' }}>
@@ -514,7 +514,7 @@ export default function BuildPage() {
                   </p>
                   <code className="text-[10px] block px-2 py-1.5 rounded font-mono"
                     style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
-                    nexus-sdk/src/index.ts
+                    bazaar-sdk/src/index.ts
                   </code>
                 </div>
               </div>

@@ -12,6 +12,31 @@ export interface NFTMetadata {
   bcmrUrl?: string;          // Bitcoin Cash Metadata Registry URL for verified status
 }
 
+/**
+ * Serialized NFT listing as returned by the marketplace indexer.
+ * Prices are strings (JSON-safe bigint), and address fields use `seller`/`creator`
+ * rather than the `sellerAddress`/`creatorAddress` names used in NFTListing.
+ */
+export interface CollectionItem {
+  txid: string;
+  tokenCategory: string;
+  commitment: string;
+  price?: string;           // satoshis string (fixed listings)
+  minBid?: string;          // satoshis string (auctions)
+  currentBid?: string;      // satoshis string (auctions)
+  endTime?: number;         // unix timestamp (auctions)
+  seller: string;           // seller BCH address
+  sellerPkh: string;
+  creator: string;          // creator BCH address
+  creatorPkh: string;
+  royaltyBasisPoints: number;
+  status: 'active' | 'sold' | 'cancelled' | 'ended';
+  listingType?: 'fixed' | 'auction';
+  metadata?: NFTMetadata | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export interface Collection {
   slug: string;
   name: string;
@@ -27,7 +52,7 @@ export interface Collection {
   ownerCount: number;
   royaltyBasisPoints: number;
   bids?: CollectionBid[];
-  items: any[];
+  items: CollectionItem[];
   createdAt?: number;
 }
 
@@ -188,6 +213,25 @@ export interface NFTDrop {
 }
 
 export type DropStatus = 'upcoming' | 'presale' | 'live' | 'ended' | 'sold-out';
+
+// ─── Liquidity Pools ──────────────────────────────────────────────────────────
+
+export interface LiquidityPool {
+  txid: string;             // creation txid (pool UTXO txid)
+  tokenCategory: string;   // collection this pool buys
+  poolSalt: string;         // 32-byte hex salt (makes pool address unique)
+  price: string;            // satoshis per NFT (string for JSON safety)
+  operator: string;         // operator BCH address
+  operatorPkh: string;      // operator public key hash hex
+  creator: string;          // creator BCH address (receives royalties)
+  creatorPkh: string;       // creator public key hash hex
+  royaltyBasisPoints: number;
+  contractAddress: string;  // P2SH32 pool address
+  availableSats: string;    // current BCH in pool (satoshis, string)
+  status: 'active' | 'empty' | 'withdrawn';
+  createdAt?: number;
+  updatedAt?: number;
+}
 
 // ─── Fractionalized NFTs ──────────────────────────────────────────────────────
 

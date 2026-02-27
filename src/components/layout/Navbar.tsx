@@ -124,7 +124,7 @@ export function Navbar() {
   const [balance, setBalance] = useState<bigint>(0n);
   const [searchFocused, setSearchFocused] = useState(false);
 
-  const refreshBalance = (address: string, tokenAddress: string, publicKey: string) => {
+  const refreshBalance = (address: string, tokenAddress: string, publicKey: string, retryMs?: number) => {
     fetchWalletData(address).then((data) => {
       if (data) {
         const bal = BigInt(data.balance);
@@ -136,10 +136,17 @@ export function Navbar() {
           publicKey,
           isConnected: true,
         });
+        // If Electrum was unavailable and balance is 0, retry after a short delay
+        if (data.electrumError && bal === 0n) {
+          const delay = retryMs ?? 8_000;
+          setTimeout(() => refreshBalance(address, tokenAddress, publicKey, Math.min(delay * 2, 60_000)), delay);
+        }
       }
     }).catch((err) => {
       console.warn('Failed to fetch wallet data:', err);
-      // Keep existing wallet state if fetch fails, don't crash
+      // Retry on network error
+      const delay = retryMs ?? 8_000;
+      setTimeout(() => refreshBalance(address, tokenAddress, publicKey, Math.min(delay * 2, 60_000)), delay);
     });
   };
 
@@ -159,12 +166,23 @@ export function Navbar() {
     }
   }, [setWallet]);
 
-  // Refetch balance when wallet connects (modal closes with new wallet)
+  // Refetch balance when wallet connects or address changes
   useEffect(() => {
-    if (wallet?.isConnected && wallet.balance === 0n) {
+    if (wallet?.isConnected && wallet.address) {
       refreshBalance(wallet.address, wallet.tokenAddress, wallet.publicKey);
     }
-  }, [wallet?.isConnected]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet?.isConnected, wallet?.address]);
+
+  // Periodic 30s balance refresh while wallet is connected
+  useEffect(() => {
+    if (!wallet?.isConnected || !wallet?.address) return;
+    const interval = setInterval(() => {
+      refreshBalance(wallet.address, wallet.tokenAddress, wallet.publicKey);
+    }, 30_000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet?.isConnected, wallet?.address]);
 
   const handleDisconnect = async () => {
     if (connectionType === 'walletconnect') {

@@ -12,7 +12,6 @@ export async function POST(request: NextRequest) {
       privateKeyHex,
       ownerPkh,
       ownerAddress,
-      ownerTokenAddress,
       nftUtxo,
       reserveSats,
     } = body;
@@ -26,26 +25,32 @@ export async function POST(request: NextRequest) {
 
     const privateKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
 
-    // If no explicit token-capable address provided, derive the P2SH32 token address
-    // for the user's generated wallet (P2PKH contract token address).
-    const finalOwnerTokenAddress = ownerTokenAddress || (() => {
-      try {
-        if (!ownerPkh) return ownerAddress;
-        const userContract = buildP2PKHContract(ownerPkh);
-        return (userContract as any).tokenAddress || ownerAddress;
-      } catch (e) {
-        return ownerAddress;
+    // Always derive the token-capable address server-side
+    const { lockingBytecodeToCashAddress, cashAddressToLockingBytecode, decodeCashAddress } = require('@bitauth/libauth');
+    const decoded = decodeCashAddress(ownerAddress);
+    let finalOwnerTokenAddress = ownerAddress;
+    if (typeof decoded !== 'string') {
+      const tokenAddrResult = lockingBytecodeToCashAddress({ bytecode: cashAddressToLockingBytecode(ownerAddress).bytecode, prefix: decoded.prefix, tokenSupport: true });
+      if (typeof tokenAddrResult !== 'string') {
+        finalOwnerTokenAddress = tokenAddrResult.address;
       }
-    })();
+    }
+    console.log('[fractionalize] Derived token-capable address:', finalOwnerTokenAddress);
 
-    const result = await fractionalizeNFT(
-      privateKey,
-      ownerPkh,
-      ownerAddress,
-      finalOwnerTokenAddress,
-      nftUtxo,
-      BigInt(reserveSats),
-    );
+    let result;
+    try {
+      result = await fractionalizeNFT(
+        privateKey,
+        ownerPkh,
+        ownerAddress,
+        finalOwnerTokenAddress,
+        nftUtxo,
+        BigInt(reserveSats),
+      );
+    } catch (err) {
+      console.error('[/api/fractionalize] Error in fractionalizeNFT:', err);
+      throw err;
+    }
 
     // Persist vault record so the vault page and Explore tab can discover it
     if (result.success && result.sharesCategory) {

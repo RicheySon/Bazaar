@@ -91,17 +91,19 @@ jest.unstable_mockModule('@/lib/utils', () => ({
 }));
 
 jest.unstable_mockModule('@/lib/bch/listing-events', () => ({
-  buildListingEventHex:           jest.fn().mockReturnValue('aabb'),
-  buildBidEventHex:               jest.fn().mockReturnValue('aabb'),
-  buildStatusEventHex:            jest.fn().mockReturnValue('aabb'),
-  buildCollectionBidEventHex:     jest.fn().mockReturnValue('aabb'),
+  buildListingEventHex:             jest.fn().mockReturnValue('aabb'),
+  buildBidEventHex:                 jest.fn().mockReturnValue('aabb'),
+  buildStatusEventHex:              jest.fn().mockReturnValue('aabb'),
+  buildCollectionBidEventHex:       jest.fn().mockReturnValue('aabb'),
   buildCollectionBidStatusEventHex: jest.fn().mockReturnValue('aabb'),
-  parseListingEventPayload:       jest.fn(),
-  parseBidEventPayload:           jest.fn(),
-  parseStatusEventPayload:        jest.fn(),
+  buildPoolEventHex:                jest.fn().mockReturnValue('aabb'),
+  buildPoolStatusEventHex:          jest.fn().mockReturnValue('aabb'),
+  parseListingEventPayload:         jest.fn(),
+  parseBidEventPayload:             jest.fn(),
+  parseStatusEventPayload:          jest.fn(),
 }));
 
-jest.unstable_mockModule('@/lib/bch/config', () => ({
+jest.unstable_mockModule('@/lib/bch/server-config', () => ({
   getListingIndexAddress: jest.fn().mockReturnValue('bchtest:qmock_index'),
 }));
 
@@ -113,6 +115,9 @@ jest.unstable_mockModule('@/lib/bch/artifacts/auction.json', () => ({
 }));
 jest.unstable_mockModule('@/lib/bch/artifacts/p2pkh.json', () => ({
   default: { contractName: 'P2PKH', abi: [] },
+}));
+jest.unstable_mockModule('@/lib/bch/artifacts/instant-sell.json', () => ({
+  default: { contractName: 'InstantSellPool', abi: [] },
 }));
 
 // ─── Lazy imports (after mocks) ───────────────────────────────────────────

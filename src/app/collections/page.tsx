@@ -4,13 +4,14 @@ import { useState, useEffect } from 'react';
 import { Search, Grid3X3, LayoutList, TrendingUp, ArrowUpRight } from 'lucide-react';
 import { CollectionCard } from '@/components/nft/CollectionCard';
 import { formatBCH, shortenAddress, ipfsToHttp } from '@/lib/utils';
+import type { Collection } from '@/lib/types';
 import Image from 'next/image';
 import Link from 'next/link';
 
 type SortKey = 'volume' | 'floor' | 'supply' | 'listed' | 'newest';
 
 export default function CollectionsPage() {
-  const [collections, setCollections] = useState<any[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortKey>('volume');

@@ -332,17 +332,27 @@ export default function NFTDetailPage() {
                 </div>
               )}
 
-              {/* Royalty breakdown */}
-              <div className="flex items-center gap-4 text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
-                <div className="flex items-center gap-1">
-                  <Percent className="h-3 w-3" />
-                  {displayRoyalty / 100}% Creator Royalty
+              {/* Fee breakdown */}
+              {isActiveListing && displayPrice > 0n && (
+                <div className="mb-4 rounded-lg p-3 text-xs space-y-1.5" style={{ background: 'var(--bg-secondary)' }}>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--text-muted)' }}>Price</span>
+                    <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{formatBCH(displayPrice)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--text-muted)' }}>Creator Royalty ({displayRoyalty / 100}%)</span>
+                    <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{formatBCH((displayPrice * BigInt(displayRoyalty)) / 10000n)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--text-muted)' }}>Nexus Protocol</span>
+                    <span className="font-mono" style={{ color: 'var(--text-muted)' }}>0% (launch)</span>
+                  </div>
+                  <div className="flex items-center gap-1 pt-1">
+                    <Shield className="h-3 w-3" style={{ color: 'var(--accent)' }} />
+                    <span style={{ color: 'var(--text-muted)' }}>Atomic Swap — trustless, on-chain</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  <Shield className="h-3 w-3" style={{ color: 'var(--accent)' }} />
-                  Atomic Swap
-                </div>
-              </div>
+              )}
 
               {buySuccess ? (
                 <div

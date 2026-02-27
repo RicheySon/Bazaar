@@ -72,7 +72,24 @@ export async function POST(request: NextRequest) {
       listingType: 'fixed',
     };
 
-    const result = await buyNFT(privateKey, nftListing, buyerAddress);
+    // Always derive the token-capable address server-side for logging
+    const { lockingBytecodeToCashAddress, cashAddressToLockingBytecode, decodeCashAddress } = require('@bitauth/libauth');
+    const decoded = decodeCashAddress(buyerAddress);
+    let derivedTokenAddress = buyerAddress;
+    if (typeof decoded !== 'string') {
+      const tokenAddrResult = lockingBytecodeToCashAddress({ bytecode: cashAddressToLockingBytecode(buyerAddress).bytecode, prefix: decoded.prefix, tokenSupport: true });
+      if (typeof tokenAddrResult !== 'string') {
+        derivedTokenAddress = tokenAddrResult.address;
+      }
+    }
+    console.log('[sweep] Derived token-capable address:', derivedTokenAddress);
+    let result;
+    try {
+      result = await buyNFT(privateKey, nftListing, buyerAddress);
+    } catch (err) {
+      console.error('[/api/sweep] Error in buyNFT:', err);
+      throw err;
+    }
 
     return NextResponse.json({
       txid: listing.txid,

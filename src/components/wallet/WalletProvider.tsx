@@ -74,10 +74,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
             config={{
                 projectId,
                 metadata: {
-                    name: 'Bazaar NFT Marketplace',
-                    description: 'BCH CashTokens NFT Marketplace',
-                    url: typeof window !== 'undefined' ? window.location.origin : 'https://bazaar.example.com',
-                    icons: ['https://bazaar.example.com/icon.png']
+                    name: 'Bazaar',
+                    description: 'The Liquidity Layer of Bitcoin Cash — Instant Sell, Order Book, AMM Pools',
+                    url: typeof window !== 'undefined' ? window.location.origin : 'https://bazaar.cash',
+                    icons: [typeof window !== 'undefined' ? `${window.location.origin}/icon.svg` : 'https://bazaar.cash/icon.svg'],
                 },
                 // Explicitly set network to Chipnet (bchtest)
                 useChipnet: true

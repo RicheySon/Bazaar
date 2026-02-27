@@ -1,0 +1,131 @@
+{
+  "contractName": "InstantSellPool",
+  "constructorInputs": [
+    {
+      "name": "operatorPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "tokenCategory",
+      "type": "bytes32"
+    },
+    {
+      "name": "poolSalt",
+      "type": "bytes32"
+    },
+    {
+      "name": "creatorPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "royaltyBasisPoints",
+      "type": "int"
+    },
+    {
+      "name": "price",
+      "type": "int"
+    }
+  ],
+  "abi": [
+    {
+      "name": "sell",
+      "inputs": [
+        {
+          "name": "sellerPkh",
+          "type": "bytes20"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "inputs": [
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "s",
+          "type": "sig"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_6 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_2 OP_PICK OP_3 OP_ROLL OP_EQUALVERIFY OP_1 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_ROT OP_EQUALVERIFY OP_3 OP_PICK OP_3 OP_ROLL OP_MUL 1027 OP_DIV OP_3 OP_PICK OP_OVER OP_SUB 76a914 OP_7 OP_ROLL OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_3 OP_ROLL OP_CAT 88ac OP_CAT OP_1 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_2 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_2 OP_OUTPUTTOKENCATEGORY OP_1 OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_2 OP_OUTPUTTOKENCOMMITMENT OP_1 OP_UTXOTOKENCOMMITMENT OP_EQUALVERIFY OP_3 OP_OUTPUTBYTECODE OP_0 OP_UTXOBYTECODE OP_EQUALVERIFY OP_3 OP_OUTPUTVALUE OP_0 OP_UTXOVALUE OP_ROT OP_SUB OP_NUMEQUAL OP_NIP OP_ELSE OP_6 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_2 OP_PICK OP_3 OP_ROLL OP_EQUALVERIFY OP_5 OP_PICK OP_HASH160 OP_OVER OP_EQUALVERIFY OP_6 OP_ROLL OP_6 OP_ROLL OP_CHECKSIGVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE OP_0 OP_UTXOVALUE d007 OP_SUB OP_GREATERTHANOREQUAL OP_VERIFY OP_2DROP OP_2DROP OP_1 OP_ENDIF",
+  "source": "// BAZAAR / NEXUS — InstantSell Liquidity Pool Contract\r\n// BCH Chipnet - CashScript v0.10+\r\n//\r\n// A persistent BCH pool that auto-buys any NFT in a target collection.\r\n// Operators deposit BCH; sellers instantly receive payment; NFTs go to the operator.\r\n// The pool UTXO recreates itself after each purchase, decremented by the purchase price.\r\n// This is the core AMM primitive for the Nexus Liquidity Layer.\r\n\r\npragma cashscript >=0.10.0;\r\n\r\ncontract InstantSellPool(\r\n    bytes20 operatorPkh,   // pool operator (receives NFTs, can withdraw BCH)\r\n    bytes32 tokenCategory, // target collection\r\n    bytes32 poolSalt,      // unique salt per pool (allows multiple pools per operator+category+price)\r\n    bytes20 creatorPkh,    // collection creator (receives royalties)\r\n    int royaltyBasisPoints,\r\n    int price              // BCH (satoshis) paid per NFT\r\n) {\r\n    // Seller provides NFT from tokenCategory; pool pays price automatically.\r\n    //\r\n    // Input[0]:  this pool UTXO (BCH)\r\n    // Input[1]:  seller's NFT UTXO (must have tokenCategory)\r\n    // Input[2+]: seller's fee UTXOs (covers miner fee)\r\n    //\r\n    // Output[0]: seller payment (price - royalty)\r\n    // Output[1]: creator royalty\r\n    // Output[2]: NFT transferred to operator\r\n    // Output[3]: pool recreated with (poolBCH - price)\r\n    function sell(bytes20 sellerPkh) {\r\n        // Use poolSalt to make this contract uniquely addressable\r\n        require(poolSalt == poolSalt);\r\n\r\n        // Ensure seller provides an NFT from the target category\r\n        require(tx.inputs[1].tokenCategory.split(32)[0] == tokenCategory);\r\n\r\n        // Compute payout amounts\r\n        int royaltyAmount = price * royaltyBasisPoints / 10000;\r\n        int sellerAmount  = price - royaltyAmount;\r\n\r\n        // Output 0: seller receives payment\r\n        bytes25 sellerScript = new LockingBytecodeP2PKH(sellerPkh);\r\n        require(tx.outputs[0].lockingBytecode == sellerScript);\r\n        require(tx.outputs[0].value >= sellerAmount);\r\n\r\n        // Output 1: creator receives royalty\r\n        bytes25 creatorScript = new LockingBytecodeP2PKH(creatorPkh);\r\n        require(tx.outputs[1].lockingBytecode == creatorScript);\r\n        require(tx.outputs[1].value >= royaltyAmount);\r\n\r\n        // Output 2: NFT goes to operator\r\n        bytes25 operatorScript = new LockingBytecodeP2PKH(operatorPkh);\r\n        require(tx.outputs[2].lockingBytecode == operatorScript);\r\n        require(tx.outputs[2].tokenCategory == tx.inputs[1].tokenCategory);\r\n        require(tx.outputs[2].nftCommitment == tx.inputs[1].nftCommitment);\r\n\r\n        // Output 3: pool recreates itself with exactly (poolBCH - price)\r\n        // Ensures pool is self-sustaining and can't be under-paid\r\n        require(tx.outputs[3].lockingBytecode == tx.inputs[0].lockingBytecode);\r\n        require(tx.outputs[3].value == tx.inputs[0].value - price);\r\n    }\r\n\r\n    // Operator can withdraw all BCH from the pool (close the pool).\r\n    function withdraw(pubkey pk, sig s) {\r\n        require(poolSalt == poolSalt);\r\n        require(hash160(pk) == operatorPkh);\r\n        require(checkSig(s, pk));\r\n        bytes25 operatorScript = new LockingBytecodeP2PKH(operatorPkh);\r\n        require(tx.outputs[0].lockingBytecode == operatorScript);\r\n        require(tx.outputs[0].value >= tx.inputs[0].value - 2000);\r\n    }\r\n}\r\n",
+  "debug": {
+    "bytecode": "5679009c635279537a8851ce01207f757b885379537a9502102796537978940376a914577a7e0288ac7e00cd8800cca1690376a914537a7e0288ac7e51cd8851cca1690376a9147c7e0288ac7e52cd8852d151ce8852d251cf8853cd00c78853cc00c67b949c7767567a519d5279537a885579a97888567a567aad0376a9147c7e0288ac7e00cd8800cc00c602d00794a2696d6d5168",
+    "sourceMap": "29:4:60:5;;;;;31:16:31:24;;:28::36;;:8::38:1;34:26:34:27:0;:16::42:1;:49::51:0;:16::52:1;:::55;:59::72:0;:8::74:1;37:28:37:33:0;;:36::54;;:28:::1;:57::62:0;:28:::1;38::38:33:0;;:36::49;:28:::1;41:31:41:66:0;:56::65;;:31::66:1;;;42:27:42:28:0;:16::45:1;:8::63;43:27:43:28:0;:16::35:1;:::51;:8::53;46:32:46:68:0;:57::67;;:32::68:1;;;47:27:47:28:0;:16::45:1;:8::64;48:27:48:28:0;:16::35:1;:::52;:8::54;51:33:51:70:0;:58::69;:33::70:1;;;52:27:52:28:0;:16::45:1;:8::65;53:27:53:28:0;:16::43:1;:57::58:0;:47::73:1;:8::75;54:27:54:28:0;:16::43:1;:57::58:0;:47::73:1;:8::75;58:27:58:28:0;:16::45:1;:59::60:0;:49::77:1;:8::79;59:27:59:28:0;:16::35:1;:49::50:0;:39::57:1;:60::65:0;:39:::1;:8::67;29:4:60:5;;63::70::0;;;;64:16:64:24;;:28::36;;:8::38:1;65:24:65:26:0;;:16::27:1;:31::42:0;:8::44:1;66:25:66:26:0;;:28::30;;:8::33:1;67:33:67:70:0;:58::69;:33::70:1;;;68:27:68:28:0;:16::45:1;:8::65;69:27:69:28:0;:16::35:1;:49::50:0;:39::57:1;:60::64:0;:39:::1;:16;:8::66;63:4:70:5;;;11:0:71:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 15,
+        "line": 31
+      },
+      {
+        "ip": 22,
+        "line": 34
+      },
+      {
+        "ip": 42,
+        "line": 42
+      },
+      {
+        "ip": 46,
+        "line": 43
+      },
+      {
+        "ip": 55,
+        "line": 47
+      },
+      {
+        "ip": 59,
+        "line": 48
+      },
+      {
+        "ip": 67,
+        "line": 52
+      },
+      {
+        "ip": 72,
+        "line": 53
+      },
+      {
+        "ip": 77,
+        "line": 54
+      },
+      {
+        "ip": 82,
+        "line": 58
+      },
+      {
+        "ip": 90,
+        "line": 59
+      },
+      {
+        "ip": 100,
+        "line": 64
+      },
+      {
+        "ip": 105,
+        "line": 65
+      },
+      {
+        "ip": 110,
+        "line": 66
+      },
+      {
+        "ip": 118,
+        "line": 68
+      },
+      {
+        "ip": 126,
+        "line": 69
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-02-27T10:28:27.092Z"
+}

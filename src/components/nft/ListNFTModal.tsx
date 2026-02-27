@@ -247,6 +247,36 @@ export function ListNFTModal({ isOpen, onClose, nft, ownerAddress, onComplete }:
                 </div>
               </div>
 
+              {/* Fee breakdown */}
+              {priceBCH && parseFloat(priceBCH) > 0 && (() => {
+                const price = bchToSatoshis(parseFloat(priceBCH));
+                const royaltyBps = Math.round(parseFloat(royaltyPct || '0') * 100);
+                const royalty = (price * BigInt(royaltyBps)) / 10000n;
+                const you = price - royalty;
+                return (
+                  <div className="mb-4 rounded-lg p-3 text-xs space-y-1.5" style={{ background: 'var(--bg-secondary)' }}>
+                    <div className="flex justify-between">
+                      <span style={{ color: 'var(--text-muted)' }}>Sale Price</span>
+                      <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{formatBCH(price)}</span>
+                    </div>
+                    {royalty > 0n && (
+                      <div className="flex justify-between">
+                        <span style={{ color: 'var(--text-muted)' }}>Creator Royalty ({royaltyPct}%)</span>
+                        <span className="font-mono" style={{ color: 'var(--text-muted)' }}>- {formatBCH(royalty)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between pt-1 border-t" style={{ borderColor: 'var(--border)' }}>
+                      <span className="font-medium" style={{ color: 'var(--text-primary)' }}>You Receive</span>
+                      <span className="font-mono font-semibold" style={{ color: 'var(--accent)' }}>{formatBCH(you)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span style={{ color: 'var(--text-muted)' }}>Nexus Protocol</span>
+                      <span className="font-mono" style={{ color: 'var(--text-muted)' }}>0% (launch)</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {error && (
                 <div className="mb-4 px-3 py-2 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, #ef4444 10%, transparent)', color: '#ef4444' }}>
                   {error}

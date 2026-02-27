@@ -1,0 +1,71 @@
+// BAZAAR / NEXUS — InstantSell Liquidity Pool Contract
+// BCH Chipnet - CashScript v0.10+
+//
+// A persistent BCH pool that auto-buys any NFT in a target collection.
+// Operators deposit BCH; sellers instantly receive payment; NFTs go to the operator.
+// The pool UTXO recreates itself after each purchase, decremented by the purchase price.
+// This is the core AMM primitive for the Nexus Liquidity Layer.
+
+pragma cashscript >=0.10.0;
+
+contract InstantSellPool(
+    bytes20 operatorPkh,   // pool operator (receives NFTs, can withdraw BCH)
+    bytes32 tokenCategory, // target collection
+    bytes32 poolSalt,      // unique salt per pool (allows multiple pools per operator+category+price)
+    bytes20 creatorPkh,    // collection creator (receives royalties)
+    int royaltyBasisPoints,
+    int price              // BCH (satoshis) paid per NFT
+) {
+    // Seller provides NFT from tokenCategory; pool pays price automatically.
+    //
+    // Input[0]:  this pool UTXO (BCH)
+    // Input[1]:  seller's NFT UTXO (must have tokenCategory)
+    // Input[2+]: seller's fee UTXOs (covers miner fee)
+    //
+    // Output[0]: seller payment (price - royalty)
+    // Output[1]: creator royalty
+    // Output[2]: NFT transferred to operator
+    // Output[3]: pool recreated with (poolBCH - price)
+    function sell(bytes20 sellerPkh) {
+        // Use poolSalt to make this contract uniquely addressable
+        require(poolSalt == poolSalt);
+
+        // Ensure seller provides an NFT from the target category
+        require(tx.inputs[1].tokenCategory.split(32)[0] == tokenCategory);
+
+        // Compute payout amounts
+        int royaltyAmount = price * royaltyBasisPoints / 10000;
+        int sellerAmount  = price - royaltyAmount;
+
+        // Output 0: seller receives payment
+        bytes25 sellerScript = new LockingBytecodeP2PKH(sellerPkh);
+        require(tx.outputs[0].lockingBytecode == sellerScript);
+        require(tx.outputs[0].value >= sellerAmount);
+
+        // Output 1: creator receives royalty
+        bytes25 creatorScript = new LockingBytecodeP2PKH(creatorPkh);
+        require(tx.outputs[1].lockingBytecode == creatorScript);
+        require(tx.outputs[1].value >= royaltyAmount);
+
+        // Output 2: NFT goes to operator
+        bytes25 operatorScript = new LockingBytecodeP2PKH(operatorPkh);
+        require(tx.outputs[2].lockingBytecode == operatorScript);
+        require(tx.outputs[2].tokenCategory == tx.inputs[1].tokenCategory);
+        require(tx.outputs[2].nftCommitment == tx.inputs[1].nftCommitment);
+
+        // Output 3: pool recreates itself with exactly (poolBCH - price)
+        // Ensures pool is self-sustaining and can't be under-paid
+        require(tx.outputs[3].lockingBytecode == tx.inputs[0].lockingBytecode);
+        require(tx.outputs[3].value == tx.inputs[0].value - price);
+    }
+
+    // Operator can withdraw all BCH from the pool (close the pool).
+    function withdraw(pubkey pk, sig s) {
+        require(poolSalt == poolSalt);
+        require(hash160(pk) == operatorPkh);
+        require(checkSig(s, pk));
+        bytes25 operatorScript = new LockingBytecodeP2PKH(operatorPkh);
+        require(tx.outputs[0].lockingBytecode == operatorScript);
+        require(tx.outputs[0].value >= tx.inputs[0].value - 2000);
+    }
+}

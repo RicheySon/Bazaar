@@ -17,6 +17,8 @@ export interface WalletResponse {
     nftCapability: string;
     tokenAmount: string;
   }>;
+  electrumError?: boolean;
+  warning?: string;
 }
 
 export interface MarketplaceResponse {

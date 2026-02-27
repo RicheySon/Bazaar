@@ -5,16 +5,17 @@ import Image from 'next/image';
 import Link from 'next/link';
 import {
   Search, Grid3X3, LayoutList, Tag, Gavel, ExternalLink,
-  Users, TrendingUp, Package, ArrowLeft, Copy, Check, Zap
+  Users, TrendingUp, Package, ArrowLeft, Copy, Check, Zap, Droplets
 } from 'lucide-react';
 import { NFTCard } from '@/components/nft/NFTCard';
 import { VerifiedBadge } from '@/components/nft/VerifiedBadge';
 import { SweepModal } from '@/components/nft/SweepModal';
 import { CollectionBidModal } from '@/components/nft/CollectionBidModal';
 import { CancelBidModal } from '@/components/nft/CancelBidModal';
+import { InstantSellModal } from '@/components/nft/InstantSellModal';
 import { formatBCH, ipfsToHttp, shortenAddress, timeAgo } from '@/lib/utils';
 import { useWalletStore } from '@/lib/store/wallet-store';
-import type { NFTListing, AuctionListing, CollectionBid } from '@/lib/types';
+import type { NFTListing, AuctionListing, CollectionBid, LiquidityPool } from '@/lib/types';
 
 function StatBox({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -32,6 +33,42 @@ type PriceWallBucket = {
   count: number;
   sum: bigint;
 };
+
+function buildBidWall(bids: CollectionBid[], bins = 12) {
+  const activeBids = bids.filter((b) => b.status === 'active');
+  if (activeBids.length === 0) return null;
+
+  const prices = activeBids.map((b) => BigInt(b.price));
+  let min = prices[0], max = prices[0];
+  let total = 0n;
+  for (const p of prices) {
+    if (p < min) min = p;
+    if (p > max) max = p;
+    total += p;
+  }
+
+  const span = max - min;
+  const bucketCount = Math.max(1, Math.min(bins, activeBids.length, span < BigInt(bins) ? Number(span) + 1 : bins));
+  const step = bucketCount > 1 ? (span > 0n ? span / BigInt(bucketCount) : 1n) : 1n;
+
+  const buckets: PriceWallBucket[] = Array.from({ length: bucketCount }, (_, i) => {
+    const start = min + step * BigInt(i);
+    const end = i === bucketCount - 1 ? max : start + step;
+    return { start, end, count: 0, sum: 0n };
+  });
+
+  for (const price of prices) {
+    let idx = step > 0n ? Number((price - min) / step) : 0;
+    if (idx < 0) idx = 0;
+    if (idx >= bucketCount) idx = bucketCount - 1;
+    buckets[idx].count += 1;
+    buckets[idx].sum += price;
+  }
+
+  let maxSum = 0n;
+  for (const b of buckets) if (b.sum > maxSum) maxSum = b.sum;
+  return { buckets, min, max, total, maxSum };
+}
 
 function buildPriceWall(items: NFTListing[], bins = 12) {
   if (items.length === 0) return null;
@@ -89,6 +126,9 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
   const [isSweepModalOpen, setIsSweepModalOpen] = useState(false);
   const [isBidModalOpen, setIsBidModalOpen] = useState(false);
   const [cancelBid, setCancelBid] = useState<CollectionBid | null>(null);
+  const [pools, setPools] = useState<LiquidityPool[]>([]);
+  const [isAddLiquidityOpen, setIsAddLiquidityOpen] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState<number | null>(null);
 
   const { connectionType, wallet } = useWalletStore();
 
@@ -97,6 +137,7 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
       if (showLoading) setIsLoading(true);
       try {
         const res = await fetch(`/api/collections/${slug}`);
+        setFetchStatus(res.status);
         if (res.ok) {
           const data = await res.json();
           setCollection(data);
@@ -107,6 +148,13 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
             fetch(`/api/bcmr?url=${encodeURIComponent(bcmrUrl)}&category=${encodeURIComponent(category)}`)
               .then((r) => r.json())
               .then(({ verified }) => setIsVerified(!!verified))
+              .catch(() => {});
+          }
+          // Fetch liquidity pools
+          if (category) {
+            fetch(`/api/pool?category=${encodeURIComponent(category)}`)
+              .then((r) => r.json())
+              .then(({ pools: p }) => setPools((p || []).filter((x: LiquidityPool) => x.status === 'active')))
               .catch(() => {});
           }
         }
@@ -146,13 +194,28 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
   }
 
   if (!collection) {
+    const is404 = fetchStatus === 404 || fetchStatus === null;
     return (
-      <div className="px-4 sm:px-6 py-6 max-w-[1400px] mx-auto text-center py-24">
-        <Package className="h-12 w-12 mx-auto mb-4" style={{ color: 'var(--text-muted)' }} />
-        <div className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Collection not found</div>
-        <Link href="/collections" className="btn-secondary inline-flex items-center gap-2 mt-4 text-xs">
-          <ArrowLeft className="h-3 w-3" /> Back to Collections
-        </Link>
+      <div className="min-h-[60vh] flex items-center justify-center px-4">
+        <div className="text-center max-w-md">
+          <Package className="h-12 w-12 mx-auto mb-4" style={{ color: 'var(--text-muted)' }} />
+          <h1 className="text-xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
+            {is404 ? 'Collection not found' : 'Failed to load collection'}
+          </h1>
+          <p className="text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>
+            {is404
+              ? `No collection exists with the slug "${slug}". It may have been removed or the link is incorrect.`
+              : 'There was a problem fetching this collection. Please try again.'}
+          </p>
+          <div className="flex items-center justify-center gap-3">
+            <Link href="/collections" className="btn-primary inline-flex items-center gap-2 text-sm">
+              Browse Collections
+            </Link>
+            <Link href="/" className="btn-secondary inline-flex items-center gap-2 text-sm">
+              <ArrowLeft className="h-3 w-3" /> Home
+            </Link>
+          </div>
+        </div>
       </div>
     );
   }
@@ -216,6 +279,8 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
     .sort((a, b) => (BigInt(b.price) > BigInt(a.price) ? 1 : BigInt(b.price) < BigInt(a.price) ? -1 : 0));
   const bestBid = orderedBids[0];
   const priceWall = buildPriceWall(sweepableItems, 12);
+  const bidWall = buildBidWall(collectionBids, 12);
+  const bestPool = pools.sort((a, b) => Number(BigInt(b.price) - BigInt(a.price)))[0] ?? null;
   const selectNCheapest = (n: number) =>
     setSelectedTxids(new Set(sweepableItems.slice(0, n).map((l) => l.txid)));
   const selectAll = () => setSelectedTxids(new Set(sweepableItems.map((l) => l.txid)));
@@ -312,68 +377,109 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
           </p>
         )}
 
-        {/* Price Wall */}
+        {/* Order Book Depth Chart — Asks (up) + Bids (down) */}
         <div className="card p-4 mb-6">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
             <div>
-              <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Price Wall</div>
+              <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Order Book Depth</div>
               <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                Fixed listings depth by price band.
+                Asks (green ↑) and bids (purple ↓) by price band.
               </div>
             </div>
             <div className="flex items-center gap-4 text-xs">
               <div className="flex flex-col">
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Listings</span>
-                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                <span className="font-mono font-semibold" style={{ color: 'var(--accent)' }}>
                   {sweepableItems.length}
                 </span>
               </div>
               <div className="flex flex-col">
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Total Ask</span>
-                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {priceWall ? formatBCH(priceWall.total) : '--'}
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Bids</span>
+                <span className="font-mono font-semibold" style={{ color: '#a78bfa' }}>
+                  {activeBids.length}
                 </span>
               </div>
-              <div className="flex flex-col">
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Avg</span>
-                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {priceWall ? formatBCH(priceWall.avg) : '--'}
-                </span>
-              </div>
+              {bestBid && floor > 0n && (
+                <div className="flex flex-col">
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Spread</span>
+                  <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {formatBCH(floor - BigInt(bestBid.price))}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
+          {/* Ask bars (above center) */}
           {priceWall ? (
             <>
-              <div className="mt-4 grid grid-cols-12 gap-2 items-end h-28">
+              <div className="grid grid-cols-12 gap-1 items-end h-24">
                 {priceWall.buckets.map((bucket, idx) => {
                   const heightPct = priceWall.maxSum > 0n && bucket.sum > 0n
-                    ? Math.max(6, Number((bucket.sum * 100n) / priceWall.maxSum))
+                    ? Math.max(4, Number((bucket.sum * 100n) / priceWall.maxSum))
                     : 0;
-                  const label = `${formatBCH(bucket.start)} - ${formatBCH(bucket.end)} (${bucket.count})`;
                   return (
-                    <div key={`${bucket.start.toString()}-${idx}`} className="h-full flex items-end">
+                    <div key={`ask-${bucket.start.toString()}-${idx}`} className="h-full flex items-end">
                       <div
-                        title={label}
-                        className="w-full rounded-md transition-all"
+                        title={`Ask ${formatBCH(bucket.start)}–${formatBCH(bucket.end)}: ${bucket.count} listing(s)`}
+                        className="w-full rounded-t-sm transition-all"
                         style={{
                           height: `${heightPct}%`,
-                          background: 'linear-gradient(180deg, var(--accent) 0%, rgba(0, 229, 69, 0.35) 100%)',
+                          background: 'linear-gradient(180deg, var(--accent) 0%, rgba(0,229,69,0.3) 100%)',
                         }}
                       />
                     </div>
                   );
                 })}
               </div>
-              <div className="mt-2 flex items-center justify-between text-[10px] font-mono"
+              <div className="flex items-center justify-between text-[10px] font-mono mt-0.5"
                 style={{ color: 'var(--text-muted)' }}>
                 <span>{formatBCH(priceWall.min)}</span>
+                <span className="text-[10px]" style={{ color: 'var(--accent)' }}>↑ Asks</span>
                 <span>{formatBCH(priceWall.max)}</span>
               </div>
             </>
           ) : (
-            <div className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
-              No fixed listings to plot yet.
+            <div className="h-24 flex items-center justify-center text-xs" style={{ color: 'var(--text-muted)' }}>
+              No ask-side listings
+            </div>
+          )}
+
+          {/* Divider */}
+          <div className="my-1 border-t border-dashed" style={{ borderColor: 'var(--border)' }} />
+
+          {/* Bid bars (below center, inverted) */}
+          {bidWall ? (
+            <>
+              <div className="flex items-center justify-between text-[10px] font-mono mb-0.5"
+                style={{ color: 'var(--text-muted)' }}>
+                <span>{formatBCH(bidWall.min)}</span>
+                <span className="text-[10px]" style={{ color: '#a78bfa' }}>↓ Bids</span>
+                <span>{formatBCH(bidWall.max)}</span>
+              </div>
+              <div className="grid grid-cols-12 gap-1 items-start h-16">
+                {bidWall.buckets.map((bucket, idx) => {
+                  const heightPct = bidWall.maxSum > 0n && bucket.sum > 0n
+                    ? Math.max(4, Number((bucket.sum * 100n) / bidWall.maxSum))
+                    : 0;
+                  return (
+                    <div key={`bid-${bucket.start.toString()}-${idx}`} className="h-full flex items-start">
+                      <div
+                        title={`Bid ${formatBCH(bucket.start)}–${formatBCH(bucket.end)}: ${bucket.count} bid(s)`}
+                        className="w-full rounded-b-sm transition-all"
+                        style={{
+                          height: `${heightPct}%`,
+                          background: 'linear-gradient(180deg, rgba(167,139,250,0.3) 0%, #a78bfa 100%)',
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <div className="h-16 flex items-center justify-center text-xs" style={{ color: 'var(--text-muted)' }}>
+              No bid-side liquidity
             </div>
           )}
         </div>
@@ -458,6 +564,90 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
                       </td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Liquidity Pools */}
+        <div className="card p-4 mb-6">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="flex items-center gap-2">
+                <Droplets className="h-4 w-4" style={{ color: '#a78bfa' }} />
+                <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Liquidity Pools</div>
+              </div>
+              <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                AMM pools that instantly buy any NFT in this collection.
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {bestPool && (
+                <div className="flex flex-col text-xs">
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Best Pool</span>
+                  <span className="font-mono font-semibold" style={{ color: '#a78bfa' }}>
+                    {formatBCH(BigInt(bestPool.price))}
+                  </span>
+                </div>
+              )}
+              {collection.tokenCategory && collection.creatorPkh && connectionType !== 'walletconnect' && (
+                <button
+                  onClick={() => setIsAddLiquidityOpen(true)}
+                  className="text-xs px-3 py-1.5 rounded-lg font-medium border transition-colors hover:border-[#a78bfa] hover:text-[#a78bfa]"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                >
+                  + Add Liquidity
+                </button>
+              )}
+            </div>
+          </div>
+
+          {pools.length === 0 ? (
+            <div className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+              No active liquidity pools yet. Be the first to provide instant-sell liquidity for this collection.
+            </div>
+          ) : (
+            <div className="mt-4 overflow-hidden rounded-lg border" style={{ borderColor: 'var(--border)' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Buy Price</th>
+                    <th className="text-right">BCH Available</th>
+                    <th className="text-right hidden sm:table-cell">Operator</th>
+                    <th className="text-right">Capacity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pools.map((pool) => {
+                    const available = BigInt(pool.availableSats);
+                    const price = BigInt(pool.price);
+                    const nftsCanBuy = price > 0n ? Number(available / price) : 0;
+                    return (
+                      <tr key={pool.txid}>
+                        <td>
+                          <span className="text-sm font-mono" style={{ color: '#a78bfa' }}>
+                            {formatBCH(price)}
+                          </span>
+                        </td>
+                        <td className="text-right">
+                          <span className="text-xs font-mono" style={{ color: 'var(--text-primary)' }}>
+                            {formatBCH(available)}
+                          </span>
+                        </td>
+                        <td className="text-right hidden sm:table-cell">
+                          <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                            {shortenAddress(pool.operator, 4)}
+                          </span>
+                        </td>
+                        <td className="text-right">
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            ~{nftsCanBuy} NFT{nftsCanBuy !== 1 ? 's' : ''}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -788,6 +978,8 @@ export default function CollectionDetailPage({ params }: { params: Promise<{ slu
         royaltyBasisPoints={collection.royaltyBasisPoints || 0}
         onComplete={() => setIsBidModalOpen(false)}
       />
+
+      {/* InstantSellModal (triggered from pool UI) — placeholder for collection-level sell */}
 
       {cancelBid && (
         <CancelBidModal

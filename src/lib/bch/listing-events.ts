@@ -279,6 +279,68 @@ export function buildStatusEventHex(params: {
   return bytesToHex(payload);
 }
 
+// ─── Pool Events (Bazaar Liquidity Pools) ────────────────────────────────────
+const POOL_PREFIX        = new Uint8Array([0x4e, 0x58, 0x50, 0x4c]); // "NXPL"
+const POOL_STATUS_PREFIX = new Uint8Array([0x4e, 0x58, 0x50, 0x53]); // "NXPS"
+const POOL_PAYLOAD_LENGTH        = 119; // 4+1+2+8+20+20+32+32
+const POOL_STATUS_PAYLOAD_LENGTH = 58;  // 4+1+1+32+20
+
+export function buildPoolEventHex(params: {
+  tokenCategory: string;
+  operatorPkh: string;
+  creatorPkh: string;
+  poolSalt: string;
+  royaltyBasisPoints: number;
+  price: bigint;
+}): string {
+  const payload = new Uint8Array(POOL_PAYLOAD_LENGTH);
+  payload.set(POOL_PREFIX, 0);
+  payload[4] = VERSION;
+  payload.set(writeUint16BE(params.royaltyBasisPoints), 5);
+  payload.set(writeUint64BE(params.price), 7);
+  payload.set(hexToBytes(params.operatorPkh), 15);
+  payload.set(hexToBytes(params.creatorPkh), 35);
+  payload.set(hexToBytes(params.tokenCategory), 55);
+  payload.set(hexToBytes(params.poolSalt), 87);
+  return bytesToHex(payload);
+}
+
+export function parsePoolEventPayload(payload: Uint8Array): {
+  tokenCategory: string;
+  operatorPkh: string;
+  creatorPkh: string;
+  poolSalt: string;
+  royaltyBasisPoints: number;
+  price: bigint;
+} | null {
+  if (payload.length < POOL_PAYLOAD_LENGTH) return null;
+  for (let i = 0; i < POOL_PREFIX.length; i++) {
+    if (payload[i] !== POOL_PREFIX[i]) return null;
+  }
+  if (payload[4] !== VERSION) return null;
+  const royaltyBasisPoints = readUint16BE(payload, 5);
+  const price = readUint64BE(payload, 7);
+  const operatorPkh = bytesToHex(payload.slice(15, 35));
+  const creatorPkh  = bytesToHex(payload.slice(35, 55));
+  const tokenCategory = bytesToHex(payload.slice(55, 87));
+  const poolSalt      = bytesToHex(payload.slice(87, 119));
+  return { tokenCategory, operatorPkh, creatorPkh, poolSalt, royaltyBasisPoints, price };
+}
+
+export function buildPoolStatusEventHex(params: {
+  poolTxid: string;
+  status: 'sold' | 'withdrawn';
+  actorPkh: string;
+}): string {
+  const payload = new Uint8Array(POOL_STATUS_PAYLOAD_LENGTH);
+  payload.set(POOL_STATUS_PREFIX, 0);
+  payload[4] = VERSION;
+  payload[5] = params.status === 'sold' ? 1 : 2;
+  payload.set(hexToBytes(params.poolTxid), 6);
+  payload.set(hexToBytes(params.actorPkh), 38);
+  return bytesToHex(payload);
+}
+
 export function parseStatusEventPayload(payload: Uint8Array): {
   listingTxid: string;
   status: ListingStatusEvent;

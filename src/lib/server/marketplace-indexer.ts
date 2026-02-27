@@ -15,10 +15,12 @@ import auctionArtifact from '@/lib/bch/artifacts/auction.json';
 import auctionStateArtifact from '@/lib/bch/artifacts/auction-state.json';
 import collectionBidArtifact from '@/lib/bch/artifacts/collection-bid.json';
 import { parseListingEventPayload, parseBidEventPayload, parseStatusEventPayload, parseCollectionBidEventPayload, parseCollectionBidStatusEventPayload } from '@/lib/bch/listing-events';
+import type { CollectionItem, CollectionBid } from '@/lib/types';
 import { fetchMetadataFromIPFS } from '@/lib/ipfs/pinata';
 import { getListingIndexAddress } from '@/lib/bch/server-config';
 import { commitmentHexToCid } from '@/lib/utils';
 import { getElectrumProvider } from '@/lib/bch/electrum';
+import { readRegistry } from './marketplace-store';
 
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK as 'chipnet' | 'mainnet') || 'chipnet';
 const MAX_EVENTS = parseInt(process.env.MARKETPLACE_INDEX_LIMIT || '200');
@@ -27,10 +29,21 @@ const ADDRESS_PREFIX =
   (NETWORK === 'mainnet' ? 'bitcoincash' : 'bchtest');
 const MARKETPLACE_CACHE_MS = Math.max(0, parseInt(process.env.MARKETPLACE_INDEX_CACHE_MS || '30000'));
 
+type IndexedAuctionItem = CollectionItem & {
+  minBid: string;
+  minBidIncrement: string;
+  currentBid: string;
+  endTime: number;
+  currentBidder: string;
+  bidHistory: Array<{ bidder: string; amount: string; txid: string; timestamp: number }>;
+  trackingCategory?: string;
+  auctionStateAddress?: string;
+};
+
 type MarketplaceData = {
-  listings: any[];
-  auctions: any[];
-  bids: any[];
+  listings: CollectionItem[];
+  auctions: IndexedAuctionItem[];
+  bids: CollectionBid[];
   total: number;
 };
 
@@ -163,31 +176,50 @@ async function fetchIndexEventHistory(provider: ElectrumNetworkProvider): Promis
   if (typeof decoded === 'string') return [];
 
   const scriptHash = scriptHashFromLockingBytecode(decoded.bytecode);
-  try {
-    if (typeof provider.connectCluster === 'function') {
-      await provider.connectCluster().catch(() => { });
+
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAY_MS = 3000;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      if (typeof provider.connectCluster === 'function') {
+        await provider.connectCluster().catch(() => { });
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore connection errors; request may still succeed
+
+    let history: unknown;
+    try {
+      history = await provider.performRequest('blockchain.scripthash.get_history', scriptHash);
+    } catch (error) {
+      console.error(`[Marketplace Indexer] Electrum attempt ${attempt}/${MAX_ATTEMPTS} failed:`, error);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      return [];
+    }
+
+    if (!Array.isArray(history)) {
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      return [];
+    }
+
+    const entries = history
+      .map((entry: any) => ({
+        txid: (entry.tx_hash || entry.txid) as string,
+        height: typeof entry.height === 'number' ? entry.height : 0,
+      }))
+      .filter((entry) => entry.txid);
+
+    return entries.slice(-MAX_EVENTS);
   }
 
-  let history: unknown;
-  try {
-    history = await provider.performRequest('blockchain.scripthash.get_history', scriptHash);
-  } catch (error) {
-    console.error('[Marketplace Indexer] Failed to fetch index history:', error);
-    return [];
-  }
-  if (!Array.isArray(history)) return [];
-
-  const entries = history
-    .map((entry: any) => ({
-      txid: (entry.tx_hash || entry.txid) as string,
-      height: typeof entry.height === 'number' ? entry.height : 0,
-    }))
-    .filter((entry) => entry.txid);
-
-  return entries.slice(-MAX_EVENTS);
+  return [];
 }
 
 async function parseIndexEventsFromTx(
@@ -339,6 +371,41 @@ function buildCollectionBidAddress(
   return contract.address;
 }
 
+async function buildFromStore(): Promise<MarketplaceData> {
+  try {
+    const registry = await readRegistry();
+    const activeRecords = registry.listings.filter((l) => l.status === 'active');
+    const listings: CollectionItem[] = await Promise.all(
+      activeRecords.map(async (record) => {
+        const metadata = record.commitment
+          ? await enrichMetadata(record.commitment).catch(() => null)
+          : null;
+        return {
+          txid: record.id,
+          tokenCategory: record.tokenCategory,
+          commitment: record.commitment,
+          price: record.price,
+          seller: record.sellerAddress,
+          sellerPkh: record.sellerPkh,
+          creator: record.creatorAddress,
+          creatorPkh: record.creatorPkh,
+          royaltyBasisPoints: record.royaltyBasisPoints,
+          status: record.status as CollectionItem['status'],
+          listingType: record.listingType,
+          metadata,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        };
+      })
+    );
+    console.log(`[Marketplace Indexer] Store fallback: ${listings.length} active listing(s)`);
+    return { listings, auctions: [], bids: [], total: listings.length };
+  } catch (err) {
+    console.error('[Marketplace Indexer] Store fallback failed:', err);
+    return { listings: [], auctions: [], bids: [], total: 0 };
+  }
+}
+
 export async function getMarketplaceData() {
   const now = Date.now();
   if (MARKETPLACE_CACHE_MS > 0 && marketplaceCache) {
@@ -356,9 +423,15 @@ export async function getMarketplaceData() {
       const provider = getElectrumProvider(NETWORK);
       const history = await fetchIndexEventHistory(provider);
 
-      const listings: any[] = [];
-      const auctions: any[] = [];
-      const bids: any[] = [];
+      // When Electrum returns no events (unreachable or listing index not indexed),
+      // fall back to the persistent store so users can see their listings.
+      if (history.length === 0) {
+        return buildFromStore();
+      }
+
+      const listings: CollectionItem[] = [];
+      const auctions: IndexedAuctionItem[] = [];
+      const bids: CollectionBid[] = [];
 
       const listingEvents = new Map<
         string,
@@ -499,10 +572,10 @@ export async function getMarketplaceData() {
               }
             }
 
-            let activeUtxo = null as any;
+            let activeUtxo: Awaited<ReturnType<typeof provider.getUtxos>>[number] | null = null;
             try {
               const utxos = await provider.getUtxos(contractAddress);
-              activeUtxo = utxos.find((u) => u.token?.category === payload.tokenCategory);
+              activeUtxo = utxos.find((u) => u.token?.category === payload.tokenCategory) ?? null;
             } catch {
               activeUtxo = null;
             }
@@ -540,7 +613,7 @@ export async function getMarketplaceData() {
                   timestamp: await getBlockTimeMs(provider, bid.height),
                 }))
               );
-              let status: string = isActive ? (ended ? 'ended' : 'active') : 'sold';
+              let status: 'active' | 'sold' | 'cancelled' | 'ended' = isActive ? (ended ? 'ended' : 'active') : 'sold';
               if (statusEvent) status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
               return {
                 type: 'auction' as const, item: {
@@ -557,7 +630,7 @@ export async function getMarketplaceData() {
                 }
               };
             } else {
-              let status: string = isActive ? 'active' : 'sold';
+              let status: 'active' | 'sold' | 'cancelled' = isActive ? 'active' : 'sold';
               if (statusEvent) status = statusEvent.status === 'cancelled' ? 'cancelled' : 'sold';
               return {
                 type: 'listing' as const, item: {
@@ -598,10 +671,10 @@ export async function getMarketplaceData() {
               payload.royaltyBasisPoints
             );
 
-            let activeUtxo = null as any;
+            let activeUtxo: Awaited<ReturnType<typeof provider.getUtxos>>[number] | null = null;
             try {
               const utxos = await provider.getUtxos(contractAddress);
-              activeUtxo = utxos.find((u) => !u.token);
+              activeUtxo = utxos.find((u) => !u.token) ?? null;
             } catch {
               activeUtxo = null;
             }

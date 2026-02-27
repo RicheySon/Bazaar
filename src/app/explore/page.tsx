@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Search, PackageOpen, Wallet, Layers, Tag, Lock } from 'lucide-react';
 import { CollectionCard } from '@/components/nft/CollectionCard';
 import { ListNFTModal, type WalletNFT } from '@/components/nft/ListNFTModal';
+import type { Collection } from '@/lib/types';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { ipfsToHttp, shortenAddress, formatBCH } from '@/lib/utils';
 import Image from 'next/image';
@@ -28,7 +29,7 @@ interface WalletNFTWithMeta extends WalletNFT {
 
 export default function ExplorePage() {
   // — Collections mode state —
-  const [collections, setCollections] = useState<any[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<'volume' | 'floor-low' | 'floor-high' | 'newest'>('volume');

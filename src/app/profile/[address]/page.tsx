@@ -11,11 +11,12 @@ import { NFTGrid } from '@/components/nft/NFTGrid';
 import { ListNFTModal, type WalletNFT } from '@/components/nft/ListNFTModal';
 import { FractionalizeModal } from '@/components/nft/FractionalizeModal';
 import { AcceptBidModal } from '@/components/nft/AcceptBidModal';
+import { InstantSellModal } from '@/components/nft/InstantSellModal';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { formatBCH, shortenAddress } from '@/lib/utils';
 import { fetchWalletData, fetchMarketplaceListings } from '@/lib/bch/api-client';
 import { getExplorerAddressUrl, CHIPNET_CONFIG } from '@/lib/bch/config';
-import type { NFTListing, CollectionBid } from '@/lib/types';
+import type { NFTListing, CollectionBid, LiquidityPool } from '@/lib/types';
 
 type ProfileTab = 'owned' | 'listed' | 'auctions';
 
@@ -37,7 +38,13 @@ export default function ProfilePage() {
   const [listingNft, setListingNft] = useState<WalletNFT | null>(null);
   const [fractionalizeNft, setFractionalizeNft] = useState<WalletNFT | null>(null);
   const [collectionBids, setCollectionBids] = useState<CollectionBid[]>([]);
+  const [pools, setPools] = useState<LiquidityPool[]>([]);
   const [sellBid, setSellBid] = useState<{ bid: CollectionBid; nft: WalletNFT } | null>(null);
+  const [instantSellTarget, setInstantSellTarget] = useState<{
+    nftUtxo: { txid: string; vout: number; satoshis: string | number; tokenCategory: string; commitment?: string; capability?: 'none' | 'mutable' | 'minting'; metadata?: { name?: string } };
+    bestBid?: CollectionBid | null;
+    bestPool?: LiquidityPool | null;
+  } | null>(null);
 
   const loadProfile = async () => {
     setIsLoading(true);
@@ -54,6 +61,12 @@ export default function ProfilePage() {
         }));
         setNfts(userNfts);
       }
+
+      // Fetch liquidity pools for the user's NFT categories
+      fetch('/api/pool')
+        .then((r) => r.json())
+        .then(({ pools: p }) => setPools((p || []).filter((x: LiquidityPool) => x.status === 'active')))
+        .catch(() => {});
 
       const marketplace = await fetchMarketplaceListings();
       if (marketplace) {
@@ -142,6 +155,15 @@ export default function ProfilePage() {
     const existing = bestBidsByCategory.get(bid.tokenCategory);
     if (!existing || BigInt(bid.price) > BigInt(existing.price)) {
       bestBidsByCategory.set(bid.tokenCategory, bid);
+    }
+  }
+
+  const bestPoolsByCategory = new Map<string, LiquidityPool>();
+  for (const pool of pools) {
+    if (pool.status !== 'active') continue;
+    const existing = bestPoolsByCategory.get(pool.tokenCategory);
+    if (!existing || BigInt(pool.price) > BigInt(existing.price)) {
+      bestPoolsByCategory.set(pool.tokenCategory, pool);
     }
   }
 
@@ -262,6 +284,17 @@ export default function ProfilePage() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
               {nfts.map((nft) => {
                 const bestBid = bestBidsByCategory.get(nft.tokenCategory);
+                const bestPool = bestPoolsByCategory.get(nft.tokenCategory);
+                const bidPrice = bestBid ? BigInt(bestBid.price) : 0n;
+                const poolPrice = bestPool ? BigInt(bestPool.price) : 0n;
+                const bestInstantPrice = bidPrice > poolPrice ? bidPrice : poolPrice;
+                const hasInstantSell = bestInstantPrice > 0n;
+                const nftRef = {
+                  txid: nft.txid, vout: nft.vout,
+                  satoshis: nft.satoshis.toString(),
+                  tokenCategory: nft.tokenCategory,
+                  commitment: nft.commitment, capability: 'none' as const,
+                };
                 return (
                   <div key={nft.txid} className="card overflow-hidden flex flex-col">
                     <div className="aspect-square flex items-center justify-center"
@@ -288,24 +321,18 @@ export default function ProfilePage() {
                           <Tag className="h-3 w-3" />
                           List on Bazaar
                         </button>
-                        {bestBid && canSignTx && (
+                        {hasInstantSell && canSignTx && (
                           <button
-                            onClick={() => setSellBid({
-                              bid: bestBid,
-                              nft: {
-                                txid: nft.txid,
-                                vout: nft.vout,
-                                satoshis: nft.satoshis.toString(),
-                                tokenCategory: nft.tokenCategory,
-                                nftCommitment: nft.commitment,
-                                nftCapability: 'none',
-                              },
+                            onClick={() => setInstantSellTarget({
+                              nftUtxo: nftRef,
+                              bestBid: bestBid ?? null,
+                              bestPool: bestPool ?? null,
                             })}
                             className="w-full py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90 flex items-center justify-center gap-1.5"
                             style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
                           >
                             <Zap className="h-3 w-3" />
-                            Sell to Bid ({formatBCH(BigInt(bestBid.price))})
+                            Instant Sell ({formatBCH(bestInstantPrice)})
                           </button>
                         )}
                         {canSignTx && (
@@ -369,6 +396,17 @@ export default function ProfilePage() {
           nft={sellBid.nft}
           sellerAddress={address}
           onComplete={() => { setSellBid(null); loadProfile(); }}
+        />
+      )}
+
+      {instantSellTarget && (
+        <InstantSellModal
+          isOpen={!!instantSellTarget}
+          onClose={() => setInstantSellTarget(null)}
+          nftUtxo={instantSellTarget.nftUtxo}
+          bestBid={instantSellTarget.bestBid}
+          bestPool={instantSellTarget.bestPool}
+          onComplete={() => { setInstantSellTarget(null); loadProfile(); }}
         />
       )}
     </div>

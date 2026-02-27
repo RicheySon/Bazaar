@@ -5,11 +5,12 @@ import Link from 'next/link';
 import Image from 'next/image';
 import {
   TrendingUp, ArrowUpRight, ArrowDownRight, Activity,
-  ChevronRight, Zap, Shield, BarChart3
+  ChevronRight, Zap, Shield, BarChart3, Droplets, BookOpen, Layers, Package
 } from 'lucide-react';
 import { useNFTStore } from '@/lib/store/nft-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/lib/utils';
+import type { Collection, CollectionBid, CollectionItem } from '@/lib/types';
 
 const timeFilters = ['1h', '6h', '24h', '7d', '30d'] as const;
 type TimeFilter = typeof timeFilters[number];
@@ -82,11 +83,22 @@ function ActivityItem({ type, item, price, time }: {
   );
 }
 
+const FEATURES = [
+  { icon: BookOpen,  label: 'Order Book',     desc: 'Collection bids for any NFT in a category', color: 'var(--accent)' },
+  { icon: Zap,       label: 'Instant Sell',   desc: 'Exit any position in one click via bids or pools', color: 'var(--accent)' },
+  { icon: Package,   label: 'Floor Sweep',    desc: 'Atomic batch buy across sellers in one tx', color: 'var(--accent)' },
+  { icon: Droplets,  label: 'Liquidity Pools', desc: 'AMM covenants that auto-buy NFTs at floor', color: '#a78bfa' },
+  { icon: Layers,    label: 'Fractionalize',  desc: 'Split any NFT into 1M tradeable shares', color: '#60a5fa' },
+  { icon: Shield,    label: 'Non-Custodial',  desc: 'CashScript covenants — no trust required', color: 'var(--accent)' },
+];
+
 export default function HomePage() {
   const { isLoading, setLoading } = useNFTStore();
   const { bchUsd, fetchPrice } = usePriceStore();
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('24h');
-  const [collections, setCollections] = useState<any[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [activeBidCount, setActiveBidCount] = useState(0);
+  const [poolCount, setPoolCount] = useState(0);
 
   useEffect(() => {
     fetchPrice();
@@ -98,9 +110,14 @@ export default function HomePage() {
     const load = async (showLoading = false) => {
       if (showLoading) setLoading(true);
       try {
-        const res = await fetch('/api/collections');
-        const data = await res.json();
-        setCollections(data.collections || []);
+        const [colRes, marketRes, poolRes] = await Promise.all([
+          fetch('/api/collections').then((r) => r.json()),
+          fetch('/api/marketplace').then((r) => r.json()).catch(() => ({ bids: [] })),
+          fetch('/api/pool').then((r) => r.json()).catch(() => ({ pools: [] })),
+        ]);
+        setCollections(colRes.collections || []);
+        setActiveBidCount((marketRes.bids || []).filter((b: CollectionBid) => b.status === 'active').length);
+        setPoolCount((poolRes.pools || []).filter((p: any) => p.status === 'active').length);
       } catch (err) {
         console.warn('Failed to load collections:', err);
       } finally {
@@ -130,7 +147,7 @@ export default function HomePage() {
   const cutoff = Date.now() - timeWindowMs[timeFilter];
   const displayCollections = collections
     .map((col) => {
-      const recentItems = (col.items || []).filter((item: any) => (item.createdAt || 0) >= cutoff);
+      const recentItems = (col.items || []).filter((item: CollectionItem) => (item.createdAt || 0) >= cutoff);
       return { ...col, recentCount: recentItems.length };
     })
     .filter((col) => col.recentCount > 0)
@@ -139,6 +156,61 @@ export default function HomePage() {
   return (
     <div className="relative">
       <MemphisDecoration />
+
+      {/* Hero */}
+      <div className="border-b" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+        <div className="mx-auto max-w-[1400px] px-4 sm:px-6 py-8 sm:py-12">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-mono px-2 py-0.5 rounded-full"
+                  style={{ background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: 'var(--accent)' }}>
+                  Bazaar
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded-full"
+                  style={{ background: 'color-mix(in srgb, #a78bfa 12%, transparent)', color: '#a78bfa' }}>
+                  BCH Chipnet
+                </span>
+              </div>
+              <h1 className="text-3xl sm:text-4xl font-black tracking-tight mb-2" style={{ color: 'var(--text-primary)' }}>
+                The Liquidity Layer
+                <span className="block" style={{ color: 'var(--accent)' }}>of Bitcoin Cash</span>
+              </h1>
+              <p className="text-sm max-w-xl leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                Bazaar proves BCH can handle complex financial intents — limit orders, instant sells, atomic sweeps,
+                and AMM liquidity pools — faster and cheaper than any other chain.
+              </p>
+              <div className="flex items-center gap-3 mt-4 flex-wrap">
+                <Link href="/explore"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-white"
+                  style={{ background: 'var(--accent)' }}>
+                  <Zap className="h-3.5 w-3.5" /> Trade Now
+                </Link>
+                <Link href="/collections"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium border transition-colors hover:border-[#a78bfa] hover:text-[#a78bfa]"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}>
+                  <Droplets className="h-3.5 w-3.5" /> Provide Liquidity
+                </Link>
+              </div>
+            </div>
+
+            {/* Feature pills */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 lg:w-auto">
+              {FEATURES.map(({ icon: Icon, label, desc, color }) => (
+                <div key={label}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+                  style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                  <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
+                  <div>
+                    <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{label}</div>
+                    <div className="text-[10px] leading-tight mt-0.5 hidden sm:block" style={{ color: 'var(--text-muted)' }}>{desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Stats Bar */}
       <div className="border-b" style={{ borderColor: 'var(--border)' }}>
@@ -160,6 +232,14 @@ export default function HomePage() {
             <div className="w-px h-8 shrink-0 hidden md:block" style={{ background: 'var(--border)' }} />
             <div className="hidden md:block">
               <StatCard icon={Shield} label="Sellers" value={`${uniqueSellers}`} />
+            </div>
+            <div className="w-px h-8 shrink-0 hidden lg:block" style={{ background: 'var(--border)' }} />
+            <div className="hidden lg:block">
+              <StatCard icon={BookOpen} label="Active Bids" value={`${activeBidCount}`} />
+            </div>
+            <div className="w-px h-8 shrink-0 hidden lg:block" style={{ background: 'var(--border)' }} />
+            <div className="hidden lg:block">
+              <StatCard icon={Droplets} label="Pools" value={`${poolCount}`} />
             </div>
           </div>
         </div>
@@ -207,11 +287,10 @@ export default function HomePage() {
                   <tr>
                     <th className="w-10">#</th>
                     <th>Collection</th>
-                    <th className="text-right">Floor Price</th>
-                    <th className="text-right hidden sm:table-cell">Top Offer</th>
-                    <th className="text-right hidden md:table-cell">24h %</th>
-                    <th className="text-right hidden lg:table-cell">7d %</th>
-                    <th className="text-right hidden md:table-cell">24h Vol</th>
+                    <th className="text-right">Floor</th>
+                    <th className="text-right hidden sm:table-cell">Best Offer</th>
+                    <th className="text-right hidden md:table-cell">Volume</th>
+                    <th className="text-right hidden md:table-cell">Listed</th>
                     <th className="text-right hidden lg:table-cell">Owners</th>
                     <th className="text-right hidden sm:table-cell">Supply</th>
                   </tr>
@@ -229,16 +308,15 @@ export default function HomePage() {
                         </td>
                         <td className="text-right"><div className="skeleton h-4 w-16 ml-auto" /></td>
                         <td className="text-right hidden sm:table-cell"><div className="skeleton h-4 w-14 ml-auto" /></td>
-                        <td className="text-right hidden md:table-cell"><div className="skeleton h-4 w-12 ml-auto" /></td>
-                        <td className="text-right hidden lg:table-cell"><div className="skeleton h-4 w-12 ml-auto" /></td>
                         <td className="text-right hidden md:table-cell"><div className="skeleton h-4 w-16 ml-auto" /></td>
+                        <td className="text-right hidden md:table-cell"><div className="skeleton h-4 w-10 ml-auto" /></td>
                         <td className="text-right hidden lg:table-cell"><div className="skeleton h-4 w-10 ml-auto" /></td>
                         <td className="text-right hidden sm:table-cell"><div className="skeleton h-4 w-10 ml-auto" /></td>
                       </tr>
                     ))
                   ) : collections.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="text-center py-16">
+                      <td colSpan={7} className="text-center py-16">
                         <Zap className="h-8 w-8 mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
                         <div className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
                           No collections yet
@@ -253,7 +331,7 @@ export default function HomePage() {
                     </tr>
                   ) : displayCollections.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="text-center py-10">
+                      <td colSpan={7} className="text-center py-10">
                         <div className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
                           No activity in the last {timeFilter}
                         </div>
@@ -319,14 +397,13 @@ export default function HomePage() {
                             </span>
                           </td>
                           <td className="text-right hidden md:table-cell">
-                            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>--</span>
-                          </td>
-                          <td className="text-right hidden lg:table-cell">
-                            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>--</span>
-                          </td>
-                          <td className="text-right hidden md:table-cell">
                             <span className="text-sm font-mono" style={{ color: 'var(--text-secondary)' }}>
                               {vol > 0n ? formatBCH(vol) : '--'}
+                            </span>
+                          </td>
+                          <td className="text-right hidden md:table-cell">
+                            <span className="text-sm" style={{ color: col.listedCount > 0 ? 'var(--accent)' : 'var(--text-muted)' }}>
+                              {col.listedCount}
                             </span>
                           </td>
                           <td className="text-right hidden lg:table-cell">
@@ -378,9 +455,9 @@ export default function HomePage() {
               ) : (
                 collections
                   .flatMap((col) => col.items || [])
-                  .sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0))
+                  .sort((a: CollectionItem, b: CollectionItem) => (b.createdAt || 0) - (a.createdAt || 0))
                   .slice(0, 10)
-                  .map((item: any) => (
+                  .map((item: CollectionItem) => (
                     <div key={item.txid} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
                       <ActivityItem
                         type={item.listingType === 'auction' ? 'bid' : item.status === 'sold' ? 'sale' : 'list'}
@@ -407,29 +484,39 @@ export default function HomePage() {
                   <Link href="/explore" className="btn-secondary w-full text-xs text-center block py-2">
                     Explore Market
                   </Link>
+                  <Link href="/collections"
+                    className="w-full text-xs text-center block py-2 rounded-lg border transition-colors hover:border-[#a78bfa] hover:text-[#a78bfa] font-medium"
+                    style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}>
+                    + Provide Liquidity
+                  </Link>
                 </div>
               </div>
 
+              {/* Bazaar SDK card */}
               <div className="card p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <Shield className="h-4 w-4" style={{ color: 'var(--accent-blue)' }} />
-                  <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>Network</span>
+                  <BookOpen className="h-4 w-4" style={{ color: '#a78bfa' }} />
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>Bazaar SDK</span>
                 </div>
-                <div className="space-y-1.5">
+                <p className="text-[11px] mb-2 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                  Add BCH NFT liquidity to your app in one line:
+                </p>
+                <div className="rounded-lg px-3 py-2 font-mono text-[10px]"
+                  style={{ background: 'var(--bg-hover)', color: 'var(--accent)' }}>
+                  {'Bazaar.instantSell(nft, creds)'}
+                </div>
+                <div className="mt-2 space-y-1">
                   {[
                     ['Chain', 'BCH Chipnet'],
                     ['Protocol', 'CashTokens'],
                     ['Contracts', 'CashScript'],
+                    ['Fees', '< $0.01'],
                   ].map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between text-xs">
                       <span style={{ color: 'var(--text-muted)' }}>{k}</span>
                       <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{v}</span>
                     </div>
                   ))}
-                  <div className="flex items-center justify-between text-xs">
-                    <span style={{ color: 'var(--text-muted)' }}>Fees</span>
-                    <span className="font-mono" style={{ color: 'var(--accent)' }}>&lt; $0.01</span>
-                  </div>
                 </div>
               </div>
             </div>

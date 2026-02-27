@@ -41,41 +41,29 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
 
   const handleWalletConnect = async () => {
     if (isConnecting) return;
+    setIsConnecting(true);
+    setError('');
+
+    // Timeout: if WalletConnect relay is unreachable, the library swallows the
+    // error silently and connect() just hangs. Surface it after 20 s.
+    const timeoutId = setTimeout(() => {
+      setIsConnecting(false);
+      setError(
+        'WalletConnect timed out. Check your internet connection, then try again ' +
+        'or use "Reset Connection" below.'
+      );
+    }, 20_000);
+
     try {
-      if (wcDebug) {
-        console.log('--- STARTING WALLETCONNECT ---');
-        console.log('Connect function available:', !!connect);
-      }
-
-      setIsConnecting(true);
-      setError('');
-      // This opens the WalletConnect QR modal
-      if (wcDebug) {
-        console.log('Calling await connect()...');
-      }
+      if (wcDebug) console.log('[WalletConnect] calling connect()...');
       await connect();
-      if (wcDebug) {
-        console.log('connect() returned successfully');
-      }
-
-      // Don't close our modal here - let useWalletSync handle wallet state
-      // The modal will close when wallet is connected via the useEffect below
+      if (wcDebug) console.log('[WalletConnect] connect() resolved');
+      // Success path: useEffect below detects isConnected && address and closes the modal.
     } catch (err) {
-      console.error('WalletConnect error detected:', err);
-
-      // Deep inspection of the error object
-      if (typeof err === 'object' && err !== null) {
-        if (wcDebug) {
-          try {
-            console.error('Error stringified:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
-          } catch (e) {
-            console.error('Could not stringify error');
-          }
-        }
-      }
-
-      setError(err instanceof Error ? err.message : JSON.stringify(err) || 'Failed to connect wallet');
+      if (wcDebug) console.error('[WalletConnect] error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to connect wallet');
     } finally {
+      clearTimeout(timeoutId);
       setIsConnecting(false);
     }
   };
@@ -247,6 +235,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     </button>
                   </div>
                 </div>
+
+                {error && (
+                  <div className="p-3 rounded-lg mt-2" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)' }}>
+                    <p className="text-xs" style={{ color: 'var(--accent-red)' }}>{error}</p>
+                  </div>
+                )}
 
                 <div className="mt-5 p-3 rounded-lg" style={{ background: 'rgba(0,229,69,0.05)', border: '1px solid rgba(0,229,69,0.1)' }}>
                   <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
