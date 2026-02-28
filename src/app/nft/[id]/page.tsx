@@ -11,7 +11,7 @@ import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/lib/utils';
 import { fetchMarketplaceListingById } from '@/lib/bch/api-client';
-import { buyNFT, buildWcBuyParams } from '@/lib/bch/contracts';
+import { buildWcBuyParams } from '@/lib/bch/contracts';
 import { loadWallet } from '@/lib/bch/wallet';
 import type { NFTListing } from '@/lib/types';
 import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
@@ -111,7 +111,29 @@ export default function NFTDetailPage() {
         const walletData = loadWallet();
         if (!walletData) throw new Error('Wallet not found. Please reconnect.');
 
-        const result = await buyNFT(walletData.privateKey, listing, walletData.address);
+        const privateKeyHex = Array.from(walletData.privateKey)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        const res = await fetch('/api/sweep', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            listing: {
+              txid: listing.txid,
+              tokenCategory: listing.tokenCategory,
+              price: listing.price.toString(),
+              seller: listing.sellerAddress,
+              sellerPkh: listing.sellerPkh,
+              creator: listing.creatorAddress,
+              creatorPkh: listing.creatorPkh,
+              commitment: listing.commitment,
+              royaltyBasisPoints: listing.royaltyBasisPoints,
+            },
+            privateKeyHex,
+            buyerAddress: walletData.address,
+          }),
+        });
+        const result = await res.json();
         if (!result.success) throw new Error(result.error || 'Purchase failed');
 
         setListing({ ...listing, status: 'sold' });

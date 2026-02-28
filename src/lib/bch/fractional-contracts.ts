@@ -6,7 +6,7 @@ import { Contract, SignatureTemplate, Artifact, TransactionBuilder } from 'cashs
 import { binToHex, decodeCashAddress } from '@bitauth/libauth';
 import { sha256 } from '@noble/hashes/sha256';
 import type { TransactionResult } from '@/lib/types';
-import { getProvider, getUtxos, selectUtxos, buildP2PKHContract } from '@/lib/bch/contracts';
+import { getProvider, getUtxos, selectUtxos, buildP2PKHContract, withTimeout } from '@/lib/bch/contracts';
 import { hexToBytes } from '@/lib/utils';
 import type { Utxo } from 'cashscript';
 import fractionalVaultArtifact from './artifacts/fractional-vault.json';
@@ -301,7 +301,6 @@ export async function fractionalizeNFT(
     }
 
     // Add timeout to broadcast
-    const { withTimeout } = require('./contracts');
     const ELECTRUM_TIMEOUT_MS = 15000;
     const txid = await withTimeout(getProvider().sendRawTransaction(rawHex), ELECTRUM_TIMEOUT_MS, `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`);
 

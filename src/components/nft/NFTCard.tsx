@@ -125,11 +125,14 @@ export function NFTCard({ listing, index = 0 }: NFTCardProps) {
               </div>
             </div>
 
-            {listing.royaltyBasisPoints > 0 && (
-              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                {listing.royaltyBasisPoints / 100}% royalty
-              </div>
-            )}
+            <Link
+              href={linkHref}
+              className="text-[11px] font-semibold px-3 py-1 rounded-lg transition-opacity hover:opacity-90"
+              style={{ background: 'var(--accent)', color: '#000' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {isAuction ? 'Bid' : 'Buy'}
+            </Link>
           </div>
         </div>
       </div>

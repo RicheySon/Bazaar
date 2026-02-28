@@ -87,7 +87,7 @@ async function ensureElectrumConnected(electrum: ElectrumNetworkProvider) {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+export async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return await Promise.race([
     promise,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label)), ms)),
@@ -353,7 +353,7 @@ export async function createFixedListing(
     // withHardcodedFee + withoutChange: prevents CashScript from adding change to P2SH contract address.
     const tx = userContract.functions.spend(sellerPk, signatureTemplate)
       .fromP2PKH([nftInput, ...feeUtxos], signatureTemplate)
-      .to(marketplace.address, 1000n, {
+      .to(marketplace.tokenAddress, 1000n, {
         category: tokenCategory,
         amount: 0n,
         nft: { capability: tokenUtxo.capability || 'none', commitment: tokenUtxo.commitment }
