@@ -551,48 +551,59 @@ export async function buyNFT(
       throw new Error('NFT not found in contract');
     }
 
-    // Prepare buyer inputs
-    const buyerUtxos = await getUtxos(buyerAddress);
-    // Amount needed: Price + Fee (approx 1000)
-    // Actually, contract expects to receive Price. Fee is extra.
-    // Total needed from buyer = Price + Fee.
-    const needed = listing.price + 3000n;
-    const fundingUtxos = selectUtxos(buyerUtxos, needed);
     const buyerTemplate = new SignatureTemplate(buyerPrivateKey);
-
     const buyerPkh = getPkhHexFromAddress(buyerAddress);
-    const tx = contract.functions.buy(buyerPkh)
-      .from(nftUtxo)
-      .fromP2PKH(fundingUtxos, buyerTemplate); // Buyer pays
 
-    // Contract Outputs:
-    // 0: Seller
-    // 1: Creator
-    // 2: NFT to Buyer
-    // Change (handled by CashScript automatically from P2PKH inputs)
+    // BCH dust limit: outputs below 546 satoshis are rejected by the network.
+    const DUST = 546n;
+    const fee = 2000n;
+    const contractSatoshis = nftUtxo.satoshis;
 
-    // Calculation
-    const royalty = (listing.price * BigInt(listing.royaltyBasisPoints)) / 10000n;
-    const sellerAmount = listing.price - royalty;
+    // Calculate royalty amounts. The marketplace contract enforces:
+    //   outputs[0].value >= price - royaltyAmount  (seller)
+    //   outputs[1].value >= royaltyAmount           (creator)
+    // We must send at least DUST to each output or the network rejects.
+    const royaltyRaw = (listing.price * BigInt(listing.royaltyBasisPoints)) / 10000n;
+    const sellerAmount = listing.price - royaltyRaw;
+    const royaltyOutput = royaltyRaw < DUST ? DUST : royaltyRaw; // bump to dust min
 
-    tx.to(listing.sellerAddress, sellerAmount); // Output 0
-    tx.to(listing.creatorAddress, royalty);     // Output 1
+    // Fixed outputs (not counting change)
+    const fixedOutputs = sellerAmount + royaltyOutput + 1000n + DUST;
+    // Buyer must cover everything not already in the contract UTXO
+    const needed = fixedOutputs + fee > contractSatoshis
+      ? fixedOutputs + fee - contractSatoshis
+      : 0n;
 
-    // Output 2: NFT to Buyer
-    tx.to(buyerAddress, 1000n, { category: listing.tokenCategory, amount: 0n, nft: { capability: 'none', commitment: listing.commitment } } as any);
+    const buyerUtxos = await getUtxos(buyerAddress);
+    const fundingUtxos = selectUtxos(buyerUtxos, needed);
+    const buyerIn = fundingUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    const change = contractSatoshis + buyerIn - fixedOutputs - fee;
 
-    const eventBuyerPkh = buyerPkh;
     const eventHex = buildStatusEventHex({
       listingTxid: listing.txid,
       status: 'sold',
-      actorPkh: eventBuyerPkh,
+      actorPkh: buyerPkh,
     });
 
-    tx.to(indexAddress, 546n);
-    tx.withOpReturn([`0x${eventHex}`]);
+    let tx = contract.functions.buy(buyerPkh)
+      .from(nftUtxo)
+      .fromP2PKH(fundingUtxos, buyerTemplate)
+      .to(listing.sellerAddress, sellerAmount)                      // Output 0: seller
+      .to(listing.creatorAddress, royaltyOutput)                    // Output 1: creator
+      .to(buyerAddress, 1000n, {                                    // Output 2: NFT → buyer
+        category: listing.tokenCategory, amount: 0n,
+        nft: { capability: 'none', commitment: listing.commitment }
+      } as any)
+      .to(indexAddress, DUST)                                       // Output 3: index
+      .withOpReturn([`0x${eventHex}`]);                             // Output 4: event
+
+    // Return change to buyer instead of letting CashScript send it to the contract.
+    if (change >= DUST) {
+      tx = tx.to(buyerAddress, change);
+    }
 
     const txDetails = await withTimeout(
-      tx.send(),
+      tx.withHardcodedFee(fee).withoutChange().send(),
       ELECTRUM_TIMEOUT_MS,
       `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`
     );
@@ -1927,8 +1938,23 @@ export async function buildWcBuyParams(params: {
       return { error: 'Listing index address not configured.' };
     }
 
+    // BCH dust limit: outputs below 546 satoshis are rejected by the network.
+    const DUST = 546n;
+    const fee = 2000n;
+    const contractSatoshis = contractUtxo.satoshis;
+
+    const royaltyRaw = (listing.price * BigInt(listing.royaltyBasisPoints)) / 10000n;
+    const sellerAmount = listing.price - royaltyRaw;
+    // Bump royalty output to DUST minimum if needed; contract only requires >= royaltyRaw.
+    const royaltyOutput = royaltyRaw < DUST ? DUST : royaltyRaw;
+
+    const fixedOutputs = sellerAmount + royaltyOutput + 1000n + DUST;
+    const needed = fixedOutputs + fee > contractSatoshis
+      ? fixedOutputs + fee - contractSatoshis
+      : 0n;
+
     const buyerUtxos = await getUtxos(buyerAddress);
-    const fundingUtxos = selectUtxos(buyerUtxos, listing.price + 3000n);
+    const fundingUtxos = selectUtxos(buyerUtxos, needed);
 
     const buyerLockingBytecode = getLockingBytecode(buyerAddress);
     const sellerLockingBytecode = getLockingBytecode(listing.sellerAddress);
@@ -1967,9 +1993,6 @@ export async function buildWcBuyParams(params: {
       };
     });
 
-    const royalty = (listing.price * BigInt(listing.royaltyBasisPoints)) / 10000n;
-    const sellerAmount = listing.price - royalty;
-
     const indexLockingBytecode = getLockingBytecode(indexAddress);
     const buyerPkh = getPkhHexFromAddress(buyerAddress);
     const eventHex = buildStatusEventHex({
@@ -1984,19 +2007,18 @@ export async function buildWcBuyParams(params: {
 
     const outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint; token?: any }> = [
       { lockingBytecode: sellerLockingBytecode, valueSatoshis: sellerAmount },
-      { lockingBytecode: creatorLockingBytecode, valueSatoshis: royalty },
+      { lockingBytecode: creatorLockingBytecode, valueSatoshis: royaltyOutput },
       { lockingBytecode: buyerLockingBytecode, valueSatoshis: 1000n, token },
-      { lockingBytecode: indexLockingBytecode, valueSatoshis: 546n },
+      { lockingBytecode: indexLockingBytecode, valueSatoshis: DUST },
       { lockingBytecode: opReturnLockingBytecode, valueSatoshis: 0n },
     ];
 
     const totalInput = inputs.reduce((sum, u) => sum + u.satoshis, 0n);
-    const fee = 2000n;
-    const change = totalInput - sellerAmount - royalty - 1000n - 546n - fee;
+    const change = totalInput - fixedOutputs - fee;
     if (change < 0n) {
       return { error: 'Insufficient funds for purchase fees.' };
     }
-    if (change > 546n) {
+    if (change >= DUST) {
       outputs.push({ lockingBytecode: buyerLockingBytecode, valueSatoshis: change });
     }
 
