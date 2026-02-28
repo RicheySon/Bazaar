@@ -602,16 +602,20 @@ export async function buyNFT(
       tx = tx.to(buyerAddress, change);
     }
 
-    const txDetails = await withTimeout(
-      tx.withHardcodedFee(fee).withoutChange().send(),
+    // Use build() + sendRawTransaction() to bypass CashScript's debug()/bitauthUri(),
+    // which fails for mixed contract+P2PKH inputs and surfaces as "n is not a function".
+    const rawTx = await withTimeout(
+      tx.withHardcodedFee(fee).withoutChange().build(),
       ELECTRUM_TIMEOUT_MS,
       `Electrum timeout after ${ELECTRUM_TIMEOUT_MS}ms`
     );
+    const txid = await withTimeout(
+      getProvider().sendRawTransaction(rawTx),
+      ELECTRUM_TIMEOUT_MS,
+      `Electrum broadcast timeout after ${ELECTRUM_TIMEOUT_MS}ms`
+    );
 
-    return {
-      success: true,
-      txid: txDetails.txid,
-    };
+    return { success: true, txid };
   } catch (error) {
     return {
       success: false,
