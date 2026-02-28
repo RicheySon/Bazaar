@@ -13,7 +13,7 @@ import { FractionalizeModal } from '@/components/nft/FractionalizeModal';
 import { AcceptBidModal } from '@/components/nft/AcceptBidModal';
 import { InstantSellModal } from '@/components/nft/InstantSellModal';
 import { useWalletStore } from '@/lib/store/wallet-store';
-import { formatBCH, shortenAddress } from '@/lib/utils';
+import { formatBCH, shortenAddress, commitmentHexToCid, ipfsToHttp } from '@/lib/utils';
 import { fetchWalletData, fetchMarketplaceListings } from '@/lib/bch/api-client';
 import { getExplorerAddressUrl, CHIPNET_CONFIG } from '@/lib/bch/config';
 import type { NFTListing, CollectionBid, LiquidityPool } from '@/lib/types';
@@ -35,6 +35,7 @@ export default function ProfilePage() {
   const [activeTab, setActiveTab] = useState<ProfileTab>('owned');
   const [copied, setCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [nftMetaMap, setNftMetaMap] = useState<Map<string, { name?: string; image?: string }>>(new Map());
   const [listingNft, setListingNft] = useState<WalletNFT | null>(null);
   const [fractionalizeNft, setFractionalizeNft] = useState<WalletNFT | null>(null);
   const [collectionBids, setCollectionBids] = useState<CollectionBid[]>([]);
@@ -60,6 +61,31 @@ export default function ProfilePage() {
           status: 'active' as const, listingType: 'fixed' as const,
         }));
         setNfts(userNfts);
+
+        // Fetch IPFS metadata for each owned NFT in parallel so images display.
+        if (userNfts.length > 0) {
+          const gateway = process.env.NEXT_PUBLIC_PINATA_GATEWAY || 'https://gateway.pinata.cloud';
+          const settled = await Promise.allSettled(
+            userNfts.map(async (nft) => {
+              if (!nft.commitment) return null;
+              const cid = commitmentHexToCid(nft.commitment);
+              // Skip if CID decoding returned the raw hex (not a real CID)
+              if (!cid || cid === nft.commitment) return null;
+              const res = await fetch(`${gateway}/ipfs/${cid}`, {
+                headers: { Accept: 'application/json' },
+                signal: AbortSignal.timeout(8000),
+              });
+              if (!res.ok) return null;
+              const json = await res.json();
+              return [nft.commitment, { name: json.name as string | undefined, image: json.image as string | undefined }] as const;
+            })
+          );
+          const entries: [string, { name?: string; image?: string }][] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled' && r.value) entries.push(r.value as [string, { name?: string; image?: string }]);
+          }
+          setNftMetaMap(new Map(entries));
+        }
       }
 
       // Fetch liquidity pools for the user's NFT categories
@@ -297,13 +323,27 @@ export default function ProfilePage() {
                 };
                 return (
                   <div key={nft.txid} className="card overflow-hidden flex flex-col">
-                    <div className="aspect-square flex items-center justify-center"
-                      style={{ background: 'var(--bg-secondary)' }}>
-                      <ImageIcon className="h-8 w-8" style={{ color: 'var(--text-muted)' }} />
-                    </div>
+                    {(() => {
+                      const meta = nftMetaMap.get(nft.commitment);
+                      const imgUrl = meta?.image ? ipfsToHttp(meta.image) : null;
+                      return imgUrl ? (
+                        <div className="aspect-square relative overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
+                          <img
+                            src={imgUrl}
+                            alt={meta?.name || 'NFT'}
+                            className="w-full h-full object-cover"
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        </div>
+                      ) : (
+                        <div className="aspect-square flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
+                          <ImageIcon className="h-8 w-8" style={{ color: 'var(--text-muted)' }} />
+                        </div>
+                      );
+                    })()}
                     <div className="p-3 flex flex-col gap-2 flex-1">
                       <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
-                        {nft.tokenCategory.slice(0, 16)}…
+                        {nftMetaMap.get(nft.commitment)?.name || `${nft.tokenCategory.slice(0, 16)}…`}
                       </div>
                       <div className="mt-auto flex flex-col gap-1.5">
                         <button

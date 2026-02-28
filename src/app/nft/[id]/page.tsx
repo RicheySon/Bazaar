@@ -5,13 +5,12 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   ArrowLeft, Tag, Shield, User, Copy, Check,
-  ShoppingCart, Loader2, AlertCircle, Percent
+  ShoppingCart, Loader2, AlertCircle
 } from 'lucide-react';
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/lib/utils';
 import { fetchMarketplaceListingById } from '@/lib/bch/api-client';
-import { buildWcBuyParams } from '@/lib/bch/contracts';
 import { loadWallet } from '@/lib/bch/wallet';
 import type { NFTListing } from '@/lib/types';
 import { useWeb3ModalConnectorContext } from '@bch-wc2/web3modal-connector';
@@ -84,23 +83,88 @@ export default function NFTDetailPage() {
       if (!listing) throw new Error('Listing not found');
       if (listing.status !== 'active') throw new Error('Listing is no longer active');
       if (connectionType === 'walletconnect') {
-        const wcParams = await buildWcBuyParams({ listing, buyerAddress: wallet.address });
-        if ('error' in wcParams) throw new Error(wcParams.error);
+        // buildWcBuyParams is called server-side to keep contracts.ts out of the client bundle.
+        const wcRes = await fetch('/api/buy/wc-params', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            listing: { ...listing, price: listing.price.toString() },
+            buyerAddress: wallet.address,
+          }),
+        });
+        const wcData = await wcRes.json();
+        if (wcData.error) throw new Error(wcData.error);
 
-        const wcRequest = wcPayloadMode === 'raw'
-          ? {
-              transaction: wcParams.transaction,
-              sourceOutputs: wcParams.sourceOutputs as any,
-            }
-          : {
-              transaction: wcParams.transactionHex,
-              sourceOutputs: wcParams.sourceOutputsJson as any,
-            };
+        // For raw mode reconstruct binary objects from the hex-serialised JSON.
+        const fromHex = (hex: string): Uint8Array =>
+          Uint8Array.from((hex.match(/.{2}/g) ?? []).map((b) => parseInt(b, 16)));
+
+        let wcTransaction: any;
+        let wcSourceOutputs: any[];
+        if (wcPayloadMode === 'raw') {
+          wcTransaction = {
+            version: wcData.transactionJson.version,
+            locktime: wcData.transactionJson.locktime,
+            inputs: wcData.transactionJson.inputs.map((inp: any) => ({
+              outpointIndex: inp.outpointIndex,
+              outpointTransactionHash: fromHex(inp.outpointTransactionHash),
+              sequenceNumber: inp.sequenceNumber,
+              unlockingBytecode: fromHex(inp.unlockingBytecode),
+            })),
+            outputs: wcData.transactionJson.outputs.map((out: any) => ({
+              lockingBytecode: fromHex(out.lockingBytecode),
+              valueSatoshis: BigInt(out.valueSatoshis),
+              ...(out.token && {
+                token: {
+                  category: fromHex(out.token.category),
+                  amount: BigInt(out.token.amount),
+                  ...(out.token.nft && {
+                    nft: {
+                      capability: out.token.nft.capability,
+                      commitment: fromHex(out.token.nft.commitment),
+                    },
+                  }),
+                },
+              }),
+            })),
+          };
+          wcSourceOutputs = wcData.sourceOutputsJson.map((so: any) => ({
+            outpointIndex: so.outpointIndex,
+            outpointTransactionHash: fromHex(so.outpointTransactionHash),
+            sequenceNumber: so.sequenceNumber,
+            unlockingBytecode: fromHex(so.unlockingBytecode),
+            lockingBytecode: fromHex(so.lockingBytecode),
+            valueSatoshis: BigInt(so.valueSatoshis),
+            ...(so.token && {
+              token: {
+                category: fromHex(so.token.category),
+                amount: BigInt(so.token.amount),
+                ...(so.token.nft && {
+                  nft: {
+                    capability: so.token.nft.capability,
+                    commitment: fromHex(so.token.nft.commitment),
+                  },
+                }),
+              },
+            }),
+            ...(so.contract && {
+              contract: {
+                abiFunction: so.contract.abiFunction,
+                redeemScript: fromHex(so.contract.redeemScript),
+                artifact: so.contract.artifact,
+              },
+            }),
+          }));
+        } else {
+          wcTransaction = wcData.transactionHex;
+          wcSourceOutputs = wcData.sourceOutputsJson;
+        }
 
         const signResult = await signTransaction({
-          ...wcRequest,
+          transaction: wcTransaction,
+          sourceOutputs: wcSourceOutputs as any,
           broadcast: true,
-          userPrompt: wcParams.userPrompt,
+          userPrompt: wcData.userPrompt,
         });
 
         if (!signResult) throw new Error('Transaction signing was rejected by wallet.');

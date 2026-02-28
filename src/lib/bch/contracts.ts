@@ -320,8 +320,13 @@ export async function createFixedListing(
       }
     };
 
-    // Fetch fee UTXOs from the seller's actual P2PKH address (not userContract.address which is P2SH32).
+    // Fetch all UTXOs for the seller's address and verify the NFT satoshis from chain.
+    // Using chain-verified satoshis prevents BIP143 sighash mismatch if the client passed a stale value.
     const fundingUtxos = await getUtxos(sellerAddress);
+    const chainNftUtxo = fundingUtxos.find(u => u.txid === tokenUtxo.txid && u.vout === tokenUtxo.vout);
+    if (chainNftUtxo) {
+      nftInput.satoshis = chainNftUtxo.satoshis;
+    }
     const feeUtxos = selectUtxos(
       fundingUtxos.filter(u => !u.token && u.txid !== tokenUtxo.txid),
       3000n
@@ -413,6 +418,11 @@ export async function createAuctionListing(
 
     // Fetch BCH UTXOs from the seller's actual P2PKH address (not P2SH32).
     let fundingUtxos = await getUtxos(sellerAddress);
+    // Chain-verify NFT UTXO satoshis to prevent BIP143 sighash mismatch.
+    const chainNftUtxoAuction = fundingUtxos.find(u => u.txid === tokenUtxo.txid && u.vout === tokenUtxo.vout);
+    if (chainNftUtxoAuction) {
+      nftInput.satoshis = chainNftUtxoAuction.satoshis;
+    }
     let nonTokenUtxos = fundingUtxos.filter(u => !u.token);
 
     // Auction listings require a genesis-capable UTXO (vout=0) to mint the tracking NFT.
