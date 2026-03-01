@@ -5,7 +5,7 @@ import { ElectrumNetworkProvider, Contract, SignatureTemplate, Artifact, Transac
 import { decodeCashAddress, lockingBytecodeToCashAddress, encodeTransaction, binToHex, cashAddressToLockingBytecode, decodeTransaction, hexToBin } from '@bitauth/libauth';
 import { encodeNullDataScript, Op } from '@cashscript/utils';
 import type { NFTListing, AuctionListing, CollectionBid, TransactionResult } from '@/lib/types';
-import marketplaceArtifact from './artifacts/marketplace.json';
+import marketplaceArtifact from './artifacts/marketplace-v2.json';
 import auctionArtifact from './artifacts/auction.json';
 import auctionStateArtifact from './artifacts/auction-state.json';
 import collectionBidArtifact from './artifacts/collection-bid.json';
@@ -551,7 +551,8 @@ export async function buyNFT(
     const buyerTemplate = new SignatureTemplate(buyerPrivateKey);
 
     const buyerPkh = getPkhHexFromAddress(buyerAddress);
-    const tx = contract.functions.buy(buyerPkh)
+    // MarketplaceV2 accepts dynamic output indices for seller/creator/buyer outputs.
+    const tx = contract.functions.buy(buyerPkh, 0n, 1n, 2n)
       .from(nftUtxo)
       .fromP2PKH(fundingUtxos, buyerTemplate); // Buyer pays
 
@@ -1991,7 +1992,8 @@ export async function buildWcBuyParams(params: {
       locktime: 0,
     };
 
-    const contractUnlocker = contract.unlock.buy(buyerPkh);
+    // Match outputs order: 0 seller, 1 creator, 2 buyer NFT
+    const contractUnlocker = contract.unlock.buy(buyerPkh, 0n, 1n, 2n);
     const contractUnlocking = contractUnlocker.generateUnlockingBytecode({
       transaction,
       sourceOutputs,

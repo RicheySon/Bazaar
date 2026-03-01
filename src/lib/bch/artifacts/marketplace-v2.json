@@ -1,0 +1,127 @@
+{
+  "contractName": "MarketplaceV2",
+  "constructorInputs": [
+    {
+      "name": "sellerPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "price",
+      "type": "int"
+    },
+    {
+      "name": "creatorPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "royaltyBasisPoints",
+      "type": "int"
+    }
+  ],
+  "abi": [
+    {
+      "name": "buy",
+      "inputs": [
+        {
+          "name": "buyerPkh",
+          "type": "bytes20"
+        },
+        {
+          "name": "sellerOut",
+          "type": "int"
+        },
+        {
+          "name": "creatorOut",
+          "type": "int"
+        },
+        {
+          "name": "buyerOut",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "cancel",
+      "inputs": [
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "s",
+          "type": "sig"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_4 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_OVER OP_4 OP_ROLL OP_MUL 1027 OP_DIV OP_ROT OP_OVER OP_SUB 76a914 OP_3 OP_ROLL OP_CAT 88ac OP_CAT OP_6 OP_PICK OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_5 OP_ROLL OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_ROT OP_CAT 88ac OP_CAT OP_4 OP_PICK OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_3 OP_ROLL OP_OUTPUTVALUE OP_LESSTHANOREQUAL OP_VERIFY 76a914 OP_ROT OP_CAT 88ac OP_CAT OP_2 OP_PICK OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_OVER OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_OVER OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_SWAP OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_ELSE OP_4 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_4 OP_PICK OP_HASH160 OP_OVER OP_EQUALVERIFY OP_2ROT OP_CHECKSIGVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENAMOUNT OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY OP_0 OP_OUTPUTTOKENCOMMITMENT OP_INPUTINDEX OP_UTXOTOKENCOMMITMENT OP_EQUAL OP_NIP OP_NIP OP_NIP OP_ENDIF",
+  "source": "// BAZAAR - Fixed Price NFT Marketplace Contract (Batch-Safe)\n// BCH Chipnet - CashScript v0.10+\n// Atomic swap: NFT for BCH with enforced creator royalties\n// Supports batch buys by allowing dynamic output indices.\n\npragma cashscript >=0.10.0;\n\ncontract MarketplaceV2(\n    bytes20 sellerPkh,\n    int price,\n    bytes20 creatorPkh,\n    int royaltyBasisPoints\n) {\n    // Anyone can buy the listed NFT by paying the correct price.\n    // Enforces: seller paid, creator royalty paid, NFT transfers to buyer.\n    // Output indices are passed in so multiple listings can be settled in one tx.\n    function buy(bytes20 buyerPkh, int sellerOut, int creatorOut, int buyerOut) {\n        // Calculate royalty and seller proceeds\n        int royaltyAmount = price * royaltyBasisPoints / 10000;\n        int sellerAmount = price - royaltyAmount;\n\n        // Output: Seller receives payment minus royalty\n        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[sellerOut].lockingBytecode == sellerLockingBytecode);\n        require(tx.outputs[sellerOut].value >= sellerAmount);\n\n        // Output: Creator receives royalty payment\n        bytes25 creatorLockingBytecode = new LockingBytecodeP2PKH(creatorPkh);\n        require(tx.outputs[creatorOut].lockingBytecode == creatorLockingBytecode);\n        require(tx.outputs[creatorOut].value >= royaltyAmount);\n\n        // Output: NFT goes to buyer (explicitly enforced)\n        bytes25 buyerLockingBytecode = new LockingBytecodeP2PKH(buyerPkh);\n        require(tx.outputs[buyerOut].lockingBytecode == buyerLockingBytecode);\n        require(tx.outputs[buyerOut].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[buyerOut].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[buyerOut].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\n    }\n\n    // Seller can cancel the listing and reclaim their NFT\n    function cancel(pubkey pk, sig s) {\n        require(hash160(pk) == sellerPkh);\n        require(checkSig(s, pk));\n        bytes25 sellerLockingBytecode = new LockingBytecodeP2PKH(sellerPkh);\n        require(tx.outputs[0].lockingBytecode == sellerLockingBytecode);\n        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n        require(tx.outputs[0].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount);\n        require(tx.outputs[0].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);\n    }\n}\n",
+  "debug": {
+    "bytecode": "5479009c6378547a95021027967b78940376a914537a7e0288ac7e5679cd88557acca1690376a9147b7e0288ac7e5479cd88537acca1690376a9147b7e0288ac7e5279cd8878d1c0ce8878d3c0d09d7cd2c0cf877767547a519d5479a9788871ad0376a9147c7e0288ac7e00cd8800d1c0ce8800d3c0d09d00d2c0cf8777777768",
+    "sourceMap": "17:4:38:5;;;;;19:28:19:33;:36::54;;:28:::1;:57::62:0;:28:::1;20:27:20:32:0;:35::48;:27:::1;23:40:23:75:0;:65::74;;:40::75:1;;;24:27:24:36:0;;:16::53:1;:8::80;25:27:25:36:0;;:16::43:1;:::59;:8::61;28:41:28:77:0;:66::76;:41::77:1;;;29:27:29:37:0;;:16::54:1;:8::82;30:27:30:37:0;;:16::44:1;:::61;:8::63;33:39:33:73:0;:64::72;:39::73:1;;;34:27:34:35:0;;:16::52:1;:8::78;35:27:35:35:0;:16::50:1;:64::85:0;:54::100:1;:8::102;36:27:36:35:0;:16::48:1;:62::83:0;:52::96:1;:8::98;37:27:37:35:0;:16::50:1;:64::85:0;:54::100:1;:8::102;17:4:38:5;;41::49::0;;;;42:24:42:26;;:16::27:1;:31::40:0;:8::42:1;43:25:43:30:0;:8::33:1;44:40:44:75:0;:65::74;:40::75:1;;;45:27:45:28:0;:16::45:1;:8::72;46:27:46:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;47:27:47:28:0;:16::41:1;:55::76:0;:45::89:1;:8::91;48:27:48:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;41:4:49:5;;;8:0:50:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 27,
+        "line": 24
+      },
+      {
+        "ip": 32,
+        "line": 25
+      },
+      {
+        "ip": 41,
+        "line": 29
+      },
+      {
+        "ip": 46,
+        "line": 30
+      },
+      {
+        "ip": 55,
+        "line": 34
+      },
+      {
+        "ip": 60,
+        "line": 35
+      },
+      {
+        "ip": 65,
+        "line": 36
+      },
+      {
+        "ip": 71,
+        "line": 37
+      },
+      {
+        "ip": 81,
+        "line": 42
+      },
+      {
+        "ip": 83,
+        "line": 43
+      },
+      {
+        "ip": 91,
+        "line": 45
+      },
+      {
+        "ip": 96,
+        "line": 46
+      },
+      {
+        "ip": 101,
+        "line": 47
+      },
+      {
+        "ip": 107,
+        "line": 48
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-03-01T08:01:49.678Z"
+}
