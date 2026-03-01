@@ -21,7 +21,8 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  transpilePackages: ['@bitauth/libauth', '@bch-wc2/web3modal-connector', '@web3modal/standalone', '@web3modal/ui', '@web3modal/core'],
+  // Only transpile the custom WalletConnect connector; keep libauth/web3modal as provided to avoid breaking top-level await in the browser bundle.
+  transpilePackages: ['@bch-wc2/web3modal-connector'],
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
