@@ -22,7 +22,8 @@ export default function AuctionPage() {
   const id = params.id as string;
   const { wallet, setModalOpen, connectionType } = useWalletStore();
   const { signTransaction } = useWeb3ModalConnectorContext();
-  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
+  // Default to hex payloads for WalletConnect (raw Transaction objects can break some wallets)
+  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'hex';
   const { bchUsd, fetchPrice } = usePriceStore();
 
   useEffect(() => { fetchPrice(); }, [fetchPrice]);

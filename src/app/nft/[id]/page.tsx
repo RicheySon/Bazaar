@@ -21,7 +21,8 @@ export default function NFTDetailPage() {
   const id = params.id as string;
   const { wallet, setModalOpen, connectionType } = useWalletStore();
   const { signTransaction } = useWeb3ModalConnectorContext();
-  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
+  // Default to hex payloads for WalletConnect (broader wallet support). Set NEXT_PUBLIC_WC_PAYLOAD_MODE=raw to send libauth Transaction objects instead.
+  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'hex';
   const { bchUsd, fetchPrice } = usePriceStore();
   const [listing, setListing] = useState<NFTListing | null>(null);
   const [collectionFloor, setCollectionFloor] = useState<bigint | null>(null);

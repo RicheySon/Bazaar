@@ -26,7 +26,8 @@ export default function CreatePage() {
   const { wallet, setModalOpen, connectionType } = useWalletStore();
   const { signTransaction } = useWeb3ModalConnectorContext();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
+  // WalletConnect compatibility: send hex payloads by default (set NEXT_PUBLIC_WC_PAYLOAD_MODE=raw to send libauth Transaction objects)
+  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'hex';
   const wcDebug = process.env.NEXT_PUBLIC_WC_DEBUG === 'true';
 
   const [name, setName] = useState('');
