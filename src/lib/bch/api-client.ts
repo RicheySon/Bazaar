@@ -145,3 +145,22 @@ export async function prepareMint(address: string, commitment: string, name: str
     return { success: false, error: 'Network error' };
   }
 }
+
+// Broadcast a raw transaction hex string
+export async function broadcastTransaction(transactionHex: string): Promise<{ success: boolean; txid?: string; error?: string }> {
+  try {
+    const response = await fetch('/api/broadcast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactionHex }),
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      return { success: false, error: err.error || 'Failed to broadcast transaction' };
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Network error broadcasting transaction:', error);
+    return { success: false, error: 'Network error' };
+  }
+}

@@ -45,27 +45,20 @@ function buildSourceOutputsJson(sourceOutputs: any[]) {
   return sourceOutputs.map((so) => ({
     outpointIndex: so.outpointIndex,
     outpointTransactionHash: binToHex(so.outpointTransactionHash),
-    sequenceNumber: so.sequenceNumber,
-    unlockingBytecode: binToHex(so.unlockingBytecode),
+    sequenceNumber: so.sequenceNumber ?? 0xffffffff,
+    unlockingBytecode: binToHex(so.unlockingBytecode || new Uint8Array()),
     lockingBytecode: binToHex(so.lockingBytecode),
     valueSatoshis: so.valueSatoshis.toString(),
     token: so.token
       ? {
         amount: so.token.amount.toString(),
-        category: binToHex(so.token.category),
+        category: typeof so.token.category === 'string' ? so.token.category : binToHex(so.token.category),
         nft: so.token.nft
           ? {
             capability: so.token.nft.capability,
-            commitment: binToHex(so.token.nft.commitment),
+            commitment: typeof so.token.nft.commitment === 'string' ? so.token.nft.commitment : binToHex(so.token.nft.commitment),
           }
           : undefined,
-      }
-      : undefined,
-    contract: so.contract
-      ? {
-        abiFunction: so.contract.abiFunction,
-        redeemScript: binToHex(so.contract.redeemScript),
-        artifact: so.contract.artifact,
       }
       : undefined,
   }));

@@ -10,7 +10,7 @@ import {
 import { useWalletStore } from '@/lib/store/wallet-store';
 import { usePriceStore } from '@/lib/store/price-store';
 import { formatBCH, formatUSD, shortenAddress, ipfsToHttp, isVideoUrl } from '@/lib/utils';
-import { fetchMarketplaceListingById } from '@/lib/bch/api-client';
+import { fetchMarketplaceListingById, broadcastTransaction } from '@/lib/bch/api-client';
 import { buyNFT, buildWcBuyParams } from '@/lib/bch/contracts';
 import { loadWallet } from '@/lib/bch/wallet';
 import type { NFTListing } from '@/lib/types';
@@ -21,7 +21,8 @@ export default function NFTDetailPage() {
   const id = params.id as string;
   const { wallet, setModalOpen, connectionType } = useWalletStore();
   const { signTransaction } = useWeb3ModalConnectorContext();
-  const wcPayloadMode = process.env.NEXT_PUBLIC_WC_PAYLOAD_MODE || 'raw';
+  // Force hex payloads for WalletConnect (broader wallet support). 
+  const wcPayloadMode = 'hex';
   const { bchUsd, fetchPrice } = usePriceStore();
   const [listing, setListing] = useState<NFTListing | null>(null);
   const [collectionFloor, setCollectionFloor] = useState<bigint | null>(null);
@@ -87,23 +88,20 @@ export default function NFTDetailPage() {
         const wcParams = await buildWcBuyParams({ listing, buyerAddress: wallet.address });
         if ('error' in wcParams) throw new Error(wcParams.error);
 
-        const wcRequest = wcPayloadMode === 'raw'
-          ? {
-              transaction: wcParams.transaction,
-              sourceOutputs: wcParams.sourceOutputs as any,
-            }
-          : {
-              transaction: wcParams.transactionHex,
-              sourceOutputs: wcParams.sourceOutputsJson as any,
-            };
-
         const signResult = await signTransaction({
-          ...wcRequest,
-          broadcast: true,
+          transaction: wcParams.transactionHex,
+          sourceOutputs: wcParams.sourceOutputsJson as any,
+          broadcast: false,
           userPrompt: wcParams.userPrompt,
         });
 
         if (!signResult) throw new Error('Transaction signing was rejected by wallet.');
+
+        // Manual broadcast via our new API
+        const broadcastRes = await broadcastTransaction(signResult.signedTransaction);
+        if (!broadcastRes.success) {
+          throw new Error(broadcastRes.error || 'Failed to broadcast transaction.');
+        }
 
         setListing({ ...listing, status: 'sold' });
         setBuySuccess(true);
